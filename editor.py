@@ -12,6 +12,10 @@ from zoom import GraphicsViewWithZoom
 from colors_menu import choose_color
 from hide_or_unhide_panels import toggle_tools_panel,toggle_layers_panel
 
+from draw_logic import DrawingToolController
+
+from Activate_disconect_button import activate_rectangle_mode ,deactivate_drawing_mode,activate_circle_mode
+
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +56,17 @@ class MainWindow(QMainWindow):
 
         # Подключение кнопки "palette_Button"
         self.ui.palette_Button.clicked.connect(lambda:choose_color(self))
+
+
+        # Создаём контроллер, но не активируем сразу
+        self.draw_controller = DrawingToolController(self.scene)
+        # Подключаем кнопки инструментов
+        self.ui.Rectangle.clicked.connect(lambda:activate_rectangle_mode(self))
+        self.ui.Cursor.clicked.connect(lambda:deactivate_drawing_mode(self))
+        self.ui.cursor_Button.clicked.connect(lambda:deactivate_drawing_mode(self))
+
+        self.ui.Circle.clicked.connect(lambda:activate_circle_mode(self))
+
 
 
 
