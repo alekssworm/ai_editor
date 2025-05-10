@@ -1,27 +1,96 @@
-from PySide6.QtWidgets import QGraphicsRectItem, QGraphicsItem
+from PySide6.QtWidgets import  QGraphicsItem
 from PySide6.QtGui import QPen, QBrush, QColor
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QGraphicsEllipseItem
 
-class SelectableRectItem(QGraphicsRectItem):
-    _id_counter = 0
+from PySide6.QtCore import QRectF
 
+from PySide6.QtWidgets import QGraphicsRectItem
+
+class ResizeHandleItem(QGraphicsRectItem):
+    def __init__(self, parent, corner, size=8):
+        super().__init__(-size / 2, -size / 2, size, size, parent)
+        self.setBrush(QBrush(Qt.green))
+
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setAcceptHoverEvents(True)
+        self.setZValue(1)  # Чтобы всегда была выше
+
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.corner = corner
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene():
+            parent = self.parentItem()
+            if parent:
+                parent.update_from_handle(self, value)
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        parent = self.parentItem()
+        if parent is None:
+            return  # защита от падения
+
+        self._drag_start = event.scenePos()
+        self._orig_rect = parent.rect()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        parent = self.parentItem()
+        if not parent or not hasattr(self, '_orig_rect'):
+            return
+
+        delta = event.scenePos() - self._drag_start
+        if self.corner == "br":
+            new_rect = QRectF(self._orig_rect.topLeft(), self._orig_rect.bottomRight() + delta)
+            parent.setRect(new_rect.normalized())
+            self.setPos(parent.rect().bottomRight())
+        event.accept()
+
+
+class ResizableRectItem(QGraphicsRectItem):
     def __init__(self, rect, color=None):
         super().__init__(rect)
-        SelectableRectItem._id_counter += 1
-        self.id = SelectableRectItem._id_counter
+        self._updating = False  # ДО setRect
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
+        self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
+        self.setPen(QPen(Qt.white, 2, Qt.DashLine))
+        self.handles = []
+        self.add_handles()
 
-        if color is not None:
-            self.setPen(QPen(color, 2))
-            self.setBrush(QBrush(color))
-        else:
-            self.setPen(QPen(Qt.red, 2))
-            self.setBrush(QBrush(QColor(255, 0, 0, 50)))
+    def add_handles(self):
+        br_handle = ResizeHandleItem(self, corner="br")
+        br_handle.setPos(self.rect().bottomRight())
+        self.handles.append(br_handle)
+
+    def update_from_handle(self, handle, new_pos):
+        if handle.corner == "br":
+            rect = QRectF(self.rect().topLeft(), self.mapFromScene(new_pos))
+            self.setRect(rect.normalized())
+            handle.setPos(self.rect().bottomRight())
+
+    def setRect(self, rect):
+        if self._updating:
+            return
+        self._updating = True
+
+        super().setRect(rect)
 
 
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem
-from PySide6.QtGui import QPen, QBrush, QColor
-from PySide6.QtCore import Qt, QRectF
+        self._updating = False
+
+    def update_from_handle(self, handle, new_pos):
+        if self._updating:
+            return
+        self._updating = True
+
+        if handle.corner == "br":
+            rect = QRectF(self.rect().topLeft(), self.mapFromScene(new_pos))
+            super().setRect(rect.normalized())  # НЕ setRect — super().setRect
+
+            handle.setPos(self.rect().bottomRight())
+
+        self._updating = False
 
 
 class SelectableCircleItem(QGraphicsEllipseItem):

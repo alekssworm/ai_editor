@@ -1,6 +1,6 @@
 from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsSceneMouseEvent
-from draw_tools import SelectableRectItem, SelectableCircleItem  # Импортируем оба
+from draw_tools import ResizableRectItem, SelectableCircleItem  # Импортируем оба
 
 class DrawingToolController:
     def __init__(self, scene,parent=None):
@@ -26,7 +26,7 @@ class DrawingToolController:
                 self.drawing = True
                 self.start_point = event.scenePos()
                 rect = QRectF(self.start_point, self.start_point)
-                self.current_item = SelectableRectItem(rect, color)
+                self.current_item = ResizableRectItem(rect, color)
                 self.scene.addItem(self.current_item)
                 self.parent.shape_registry[shape_id] = self.current_item
 
