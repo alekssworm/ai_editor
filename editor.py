@@ -1,6 +1,6 @@
 import sys
 
-from PySide6.QtGui import QPixmap, QWheelEvent
+from PySide6.QtGui import QPixmap, QWheelEvent, QColor
 from PySide6.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QFileDialog, QGraphicsPixmapItem, QGraphicsView
 from ui_editor import Ui_MainWindow  # Это ваш сгенерированный класс
 from PySide6.QtGui import QPixmap
@@ -59,7 +59,9 @@ class MainWindow(QMainWindow):
 
 
         # Создаём контроллер, но не активируем сразу
-        self.draw_controller = DrawingToolController(self.scene)
+        self.current_shape_color = QColor(255, 0, 0, 50)  # Цвет по умолчанию
+        self.draw_controller = DrawingToolController(self.scene, self)
+
         # Подключаем кнопки инструментов
         self.ui.Rectangle.clicked.connect(lambda:activate_rectangle_mode(self))
         self.ui.Cursor.clicked.connect(lambda:deactivate_drawing_mode(self))
