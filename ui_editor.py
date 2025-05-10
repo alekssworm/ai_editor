@@ -17,8 +17,8 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QPalette, QPixmap, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsView,
     QGridLayout, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QSizePolicy, QSlider, QSpacerItem,
-    QVBoxLayout, QWidget)
+    QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout,
+    QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -139,24 +139,9 @@ class Ui_MainWindow(object):
 
         self.comboBox_3 = QComboBox(self.layoutWidget_2)
         self.comboBox_3.setObjectName(u"comboBox_3")
+        self.comboBox_3.setMinimumSize(QSize(400, 0))
 
         self.horizontalLayout_5.addWidget(self.comboBox_3)
-
-        self.label_8 = QLabel(self.layoutWidget_2)
-        self.label_8.setObjectName(u"label_8")
-
-        self.horizontalLayout_5.addWidget(self.label_8)
-
-        self.horizontalSlider_3 = QSlider(self.layoutWidget_2)
-        self.horizontalSlider_3.setObjectName(u"horizontalSlider_3")
-        self.horizontalSlider_3.setOrientation(Qt.Orientation.Horizontal)
-
-        self.horizontalLayout_5.addWidget(self.horizontalSlider_3)
-
-        self.label_9 = QLabel(self.layoutWidget_2)
-        self.label_9.setObjectName(u"label_9")
-
-        self.horizontalLayout_5.addWidget(self.label_9)
 
         self.horizontalSpacer_15 = QSpacerItem(168, 21, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
@@ -354,8 +339,6 @@ class Ui_MainWindow(object):
         self.tools_Button.setText("")
         self.eye_Button.setText("")
         self.label_7.setText(QCoreApplication.translate("MainWindow", u"object ", None))
-        self.label_8.setText(QCoreApplication.translate("MainWindow", u"transparency", None))
-        self.label_9.setText(QCoreApplication.translate("MainWindow", u"00", None))
         self.Cursor.setText("")
         self.Semicircle.setText("")
         self.Circle.setText("")

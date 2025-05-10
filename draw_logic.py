@@ -17,12 +17,18 @@ class DrawingToolController:
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent):
         if event.button() == Qt.LeftButton:
             color = self.parent.current_shape_color if self.parent else None
+
+            # Общая логика регистрации фигуры
+            shape_id = self.parent.shape_id_counter
+            self.parent.shape_id_counter += 1
+
             if self.current_tool == "rectangle":
                 self.drawing = True
                 self.start_point = event.scenePos()
                 rect = QRectF(self.start_point, self.start_point)
                 self.current_item = SelectableRectItem(rect, color)
                 self.scene.addItem(self.current_item)
+                self.parent.shape_registry[shape_id] = self.current_item
 
             elif self.current_tool == "circle":
                 self.drawing = True
@@ -30,6 +36,7 @@ class DrawingToolController:
                 rect = QRectF(self.start_point, self.start_point)
                 self.current_item = SelectableCircleItem(rect, color, dashed=True)
                 self.scene.addItem(self.current_item)
+                self.parent.shape_registry[shape_id] = self.current_item
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent):
         if self.drawing and self.current_item:

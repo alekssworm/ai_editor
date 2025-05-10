@@ -15,7 +15,8 @@ from hide_or_unhide_panels import toggle_tools_panel,toggle_layers_panel
 from draw_logic import DrawingToolController
 
 from Activate_disconect_button import activate_rectangle_mode ,deactivate_drawing_mode,activate_circle_mode
-
+from on_shape_selected import on_shape_selected
+from save_logic import save_outputs
 
 
 class MainWindow(QMainWindow):
@@ -44,12 +45,16 @@ class MainWindow(QMainWindow):
         self.ui.frame_5.hide()  # Левая панель в verticalLayout_6
         self.ui.frame_4.hide()  # Правая панель в horizontalLayout_7
 
+        # Obj id
+        self.shape_registry = {}  # {id: QGraphicsItem}
+        self.shape_id_counter = 1
+
 
         # Подключение логики переключения
         self.ui.tools_Button.clicked.connect(lambda:toggle_tools_panel(self))
         self.ui.layers_batton.clicked.connect(lambda:toggle_layers_panel(self))
 
-
+        self.scene.selectionChanged.connect(lambda :on_shape_selected(self))
 
         # Подключение кнопки "import"
         self.ui.import_button.clicked.connect(lambda: import_image(self))
@@ -69,7 +74,7 @@ class MainWindow(QMainWindow):
 
         self.ui.Circle.clicked.connect(lambda:activate_circle_mode(self))
 
-
+        self.ui.save_button.clicked.connect(lambda:save_outputs(self))
 
 
 if __name__ == "__main__":
