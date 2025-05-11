@@ -1,94 +1,102 @@
+from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem, QGraphicsItem
+from PySide6.QtGui import QImage, QPainter, Qt, QPainterPath
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QImage, QPainter, Qt, QPixmap, QPainterPath
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem
-from PySide6.QtGui import QPainterPath
-
-
+from draw_tools import SelectableCircleItem, ResizableRectItem
+import json
+import os
 
 def save_outputs(self):
+    folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
+    if not folder:
+        print("❌ Сохранение отменено.")
+        return
+
     rect = self.scene.sceneRect()
     size = rect.size().toSize()
 
-    # Найти фон
-    background = None
-    for item in self.scene.items():
-        if isinstance(item, QGraphicsPixmapItem):
-            background = item
-            break
-
+    background = next((item for item in self.scene.items() if isinstance(item, QGraphicsPixmapItem)), None)
     if not background:
         print("❌ Фон не найден.")
         return
 
-    # Найти первую фигуру (ограничим пока одним)
-    shape_item = None
-    for item in self.scene.items():
-        if isinstance(item, QGraphicsItem) and not isinstance(item, QGraphicsPixmapItem):
-            shape_item = item
-            break
+    original_image = background.pixmap().toImage()
 
-    if shape_item is None:
-        print("❌ Фигура не найдена.")
-        return
-
-    shape_rect = shape_item.sceneBoundingRect().toRect()
-
-    # 1️⃣ Сцена полностью (включая фигуру)
-    full_with_shape = QImage(size, QImage.Format_ARGB32)
-    full_with_shape.fill(Qt.transparent)
-
-    painter = QPainter(full_with_shape)
+    # 1️⃣ Фоновое изображение + фигуры
+    full_scene = QImage(size, QImage.Format_ARGB32)
+    full_scene.fill(Qt.transparent)
+    painter = QPainter(full_scene)
     self.scene.render(painter)
     painter.end()
 
-    # 2️⃣ Вырезаем фигуру из уже нарисованного изображения
-    painter = QPainter(full_with_shape)
-
-    # определяем форму
+    # 2️⃣ Копия — будем вырезать все фигуры
+    image_without_shapes = QImage(full_scene)
+    painter = QPainter(image_without_shapes)
     painter.setCompositionMode(QPainter.CompositionMode_Clear)
 
-    from draw_tools import SelectableCircleItem  # Импорт для isinstance()
+    shape_data = []
+    index = 1
 
-    if isinstance(shape_item, SelectableCircleItem):
-        path = QPainterPath()
-        path.addEllipse(shape_item.sceneBoundingRect())
-        painter.setClipPath(path)
-        painter.fillPath(path, Qt.transparent)
-    else:
-        painter.fillRect(shape_item.sceneBoundingRect(), Qt.transparent)
+    from draw_tools import ShapeItem
+
+    for item in reversed(self.scene.items()):
+        if not isinstance(item, ShapeItem):
+            continue
+
+
+
+        shape_rect = item.sceneBoundingRect().toRect()
+        brush_color = item.brush().color().name()
+        item_type = "Circle" if isinstance(item, SelectableCircleItem) else "Rectangle"
+
+        # ---- вырез из общей сцены
+        if item_type == "Circle":
+            path = QPainterPath()
+            path.addEllipse(shape_rect)
+            painter.setClipPath(path)
+            painter.fillPath(path, Qt.transparent)
+        else:
+            painter.fillRect(shape_rect, Qt.transparent)
+
+        # ---- вырез в отдельный файл
+        cut_size = shape_rect.size()
+        cut_image = QImage(cut_size, QImage.Format_ARGB32)
+        cut_image.fill(Qt.transparent)
+
+        cut_painter = QPainter(cut_image)
+        offset = QPointF(-shape_rect.x(), -shape_rect.y())
+        cut_painter.drawImage(offset, original_image)
+
+        if item_type == "Circle":
+            path = QPainterPath()
+            path.addRect(0, 0, cut_size.width(), cut_size.height())
+            circle = QPainterPath()
+            circle.addEllipse(0, 0, cut_size.width(), cut_size.height())
+            mask = path.subtracted(circle)
+            cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            cut_painter.fillPath(mask, Qt.transparent)
+
+        cut_painter.end()
+
+        cut_path = os.path.join(folder, f"shape_{index}.png")
+        cut_image.save(cut_path)
+        index += 1
+
+        shape_data.append({
+            "type": item_type,
+            "x": int(shape_rect.x()),
+            "y": int(shape_rect.y()),
+            "width": int(shape_rect.width()),
+            "height": int(shape_rect.height()),
+            "color": brush_color
+        })
 
     painter.end()
 
-    full_with_shape.save("image_without_shape_area.png")
+    # 3️⃣ Сохраняем итог
+    image_without_shapes.save(os.path.join(folder, "image_without_shape_area.png"))
 
+    with open(os.path.join(folder, "shapes.json"), "w", encoding="utf-8") as f:
+        json.dump(shape_data, f, indent=4)
 
+    print(f"✅ Сохранено {index - 1} фигур.")
 
-    # 3️⃣ Вырезаем только форму (например, круг)
-    cut_size = shape_rect.size()
-    cut_image = QImage(cut_size, QImage.Format_ARGB32)
-    cut_image.fill(Qt.transparent)
-
-    painter = QPainter(cut_image)
-
-    # Сдвигаем фон так, чтобы нужная область попала в (0, 0)
-    source_rect = shape_rect
-    target_point = QPointF(-source_rect.x(), -source_rect.y())
-    original_image = background.pixmap().toImage()
-    painter.drawImage(target_point, original_image)
-
-    if isinstance(shape_item, SelectableCircleItem):
-        path = QPainterPath()
-        path.addRect(0, 0, cut_size.width(), cut_size.height())  # всё изображение
-        circle = QPainterPath()
-        circle.addEllipse(0, 0, cut_size.width(), cut_size.height())
-        path = path.subtracted(circle)  # вычитаем круг — получаем всё КРОМЕ него
-
-        painter.setCompositionMode(QPainter.CompositionMode_Clear)
-        painter.fillPath(path, Qt.transparent)
-
-    painter.end()
-    cut_image.save("shape_only_area.png")
-
-    print("✅ Сохранено:")
-    print("🟢 image_without_shape_area.png (фон + фигуры с вырезом)")
-    print("🟢 shape_only_area.png (только область под фигурой)")

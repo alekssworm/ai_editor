@@ -7,6 +7,11 @@ from PySide6.QtCore import QRectF
 
 from PySide6.QtWidgets import QGraphicsRectItem
 
+class ShapeItem:
+    """Базовый класс для всех фигур"""
+    pass
+
+
 class ResizeHandleItem(QGraphicsRectItem):
     def __init__(self, parent, corner, size=8):
         super().__init__(-size / 2, -size / 2, size, size, parent)
@@ -48,13 +53,15 @@ class ResizeHandleItem(QGraphicsRectItem):
         event.accept()
 
 
-class ResizableRectItem(QGraphicsRectItem):
+class ResizableRectItem(QGraphicsRectItem,ShapeItem):
     def __init__(self, rect, color=None):
-        super().__init__(rect)
+        super().__init__()
         self._updating = False  # ДО setRect
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
         self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
         self.setPen(QPen(Qt.white, 2, Qt.DashLine))
+
+        self.setRect(rect)
         self.handles = []
         self.add_handles()
 
@@ -93,7 +100,7 @@ class ResizableRectItem(QGraphicsRectItem):
         self._updating = False
 
 
-class SelectableCircleItem(QGraphicsEllipseItem):
+class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
     _id_counter = 0
 
     def __init__(self, rect: QRectF, color=None, dashed=False):
