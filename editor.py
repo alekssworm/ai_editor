@@ -17,6 +17,7 @@ from draw_logic import DrawingToolController
 from Activate_disconect_button import activate_rectangle_mode ,deactivate_drawing_mode,activate_circle_mode
 from on_shape_selected import on_shape_selected
 from save_logic import save_outputs
+from show_all_handle import show_all_handles
 
 
 class MainWindow(QMainWindow):
@@ -24,6 +25,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+
+
+
 
         #--------
         self.graphics_view = GraphicsViewWithZoom(self)
@@ -75,6 +79,8 @@ class MainWindow(QMainWindow):
         self.ui.Circle.clicked.connect(lambda:activate_circle_mode(self))
 
         self.ui.save_button.clicked.connect(lambda:save_outputs(self))
+
+        self.ui.Resizable_button.clicked.connect(lambda:show_all_handles(self))
 
 
 if __name__ == "__main__":

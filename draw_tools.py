@@ -64,6 +64,7 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         self.setRect(rect)
         self.handles = []
         self.add_handles()
+        self.hide_handles()
 
     def add_handles(self):
         br_handle = ResizeHandleItem(self, corner="br")
@@ -98,6 +99,18 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
             handle.setPos(self.rect().bottomRight())
 
         self._updating = False
+
+    def show_handles(self):
+        for handle in self.handles:
+            handle.show()
+
+    def hide_handles(self):
+        for handle in self.handles:
+            handle.hide()
+
+    def mouseDoubleClickEvent(self, event):
+        self.show_handles()
+        super().mouseDoubleClickEvent(event)
 
 
 class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):

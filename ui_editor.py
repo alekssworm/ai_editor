@@ -48,7 +48,7 @@ class Ui_MainWindow(object):
         self.frame.setFrameShadow(QFrame.Shadow.Sunken)
         self.layoutWidget_2 = QWidget(self.frame)
         self.layoutWidget_2.setObjectName(u"layoutWidget_2")
-        self.layoutWidget_2.setGeometry(QRect(11, 11, 651, 81))
+        self.layoutWidget_2.setGeometry(QRect(11, 11, 705, 81))
         self.verticalLayout_5 = QVBoxLayout(self.layoutWidget_2)
         self.verticalLayout_5.setObjectName(u"verticalLayout_5")
         self.verticalLayout_5.setContentsMargins(0, 0, 0, 0)
@@ -58,6 +58,11 @@ class Ui_MainWindow(object):
         self.import_button.setObjectName(u"import_button")
 
         self.horizontalLayout_4.addWidget(self.import_button)
+
+        self.pushButton_16 = QPushButton(self.layoutWidget_2)
+        self.pushButton_16.setObjectName(u"pushButton_16")
+
+        self.horizontalLayout_4.addWidget(self.pushButton_16)
 
         self.save_button = QPushButton(self.layoutWidget_2)
         self.save_button.setObjectName(u"save_button")
@@ -79,11 +84,6 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_4.addWidget(self.settings)
 
-        self.pushButton_16 = QPushButton(self.layoutWidget_2)
-        self.pushButton_16.setObjectName(u"pushButton_16")
-
-        self.horizontalLayout_4.addWidget(self.pushButton_16)
-
         self.horizontalSpacer_14 = QSpacerItem(168, 21, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         self.horizontalLayout_4.addItem(self.horizontalSpacer_14)
@@ -95,6 +95,24 @@ class Ui_MainWindow(object):
         self.horizontalLayout_5.setObjectName(u"horizontalLayout_5")
         self.cursor_Button = QPushButton(self.layoutWidget_2)
         self.cursor_Button.setObjectName(u"cursor_Button")
+        self.cursor_Button.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
         icon = QIcon()
         icon.addFile(u"icons/mouse-cursor.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
         self.cursor_Button.setIcon(icon)
@@ -104,6 +122,24 @@ class Ui_MainWindow(object):
 
         self.palette_Button = QPushButton(self.layoutWidget_2)
         self.palette_Button.setObjectName(u"palette_Button")
+        self.palette_Button.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
         icon1 = QIcon()
         icon1.addFile(u"icons/palette.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
         self.palette_Button.setIcon(icon1)
@@ -113,6 +149,24 @@ class Ui_MainWindow(object):
 
         self.tools_Button = QPushButton(self.layoutWidget_2)
         self.tools_Button.setObjectName(u"tools_Button")
+        self.tools_Button.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
         icon2 = QIcon()
         icon2.addFile(u"icons/attribution-pencil.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
         self.tools_Button.setIcon(icon2)
@@ -122,12 +176,57 @@ class Ui_MainWindow(object):
 
         self.eye_Button = QPushButton(self.layoutWidget_2)
         self.eye_Button.setObjectName(u"eye_Button")
+        self.eye_Button.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
         icon3 = QIcon()
         icon3.addFile(u"icons/eye.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
         self.eye_Button.setIcon(icon3)
         self.eye_Button.setIconSize(QSize(24, 24))
 
         self.horizontalLayout_5.addWidget(self.eye_Button)
+
+        self.Resizable_button = QPushButton(self.layoutWidget_2)
+        self.Resizable_button.setObjectName(u"Resizable_button")
+        self.Resizable_button.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
+        icon4 = QIcon()
+        icon4.addFile(u"icons/swipe-to-right-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Resizable_button.setIcon(icon4)
+        self.Resizable_button.setIconSize(QSize(24, 24))
+
+        self.horizontalLayout_5.addWidget(self.Resizable_button)
 
         self.label_7 = QLabel(self.layoutWidget_2)
         self.label_7.setObjectName(u"label_7")
@@ -170,6 +269,25 @@ class Ui_MainWindow(object):
         self.verticalLayout_7.setObjectName(u"verticalLayout_7")
         self.Cursor = QPushButton(self.frame_5)
         self.Cursor.setObjectName(u"Cursor")
+        self.Cursor.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
         self.Cursor.setIcon(icon)
         self.Cursor.setIconSize(QSize(24, 24))
 
@@ -177,24 +295,80 @@ class Ui_MainWindow(object):
 
         self.Semicircle = QPushButton(self.frame_5)
         self.Semicircle.setObjectName(u"Semicircle")
-        icon4 = QIcon()
-        icon4.addFile(u"icons/circle-half-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Semicircle.setIcon(icon4)
+        self.Semicircle.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
+        icon5 = QIcon()
+        icon5.addFile(u"icons/circle-half-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Semicircle.setIcon(icon5)
         self.Semicircle.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Semicircle)
 
         self.Circle = QPushButton(self.frame_5)
         self.Circle.setObjectName(u"Circle")
-        icon5 = QIcon()
-        icon5.addFile(u"icons/circle.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Circle.setIcon(icon5)
+        self.Circle.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
+        icon6 = QIcon()
+        icon6.addFile(u"icons/circle.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Circle.setIcon(icon6)
         self.Circle.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Circle)
 
         self.Freeform = QPushButton(self.frame_5)
         self.Freeform.setObjectName(u"Freeform")
+        self.Freeform.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
         self.Freeform.setIcon(icon2)
         self.Freeform.setIconSize(QSize(24, 24))
 
@@ -202,54 +376,165 @@ class Ui_MainWindow(object):
 
         self.Angle = QPushButton(self.frame_5)
         self.Angle.setObjectName(u"Angle")
-        icon6 = QIcon()
-        icon6.addFile(u"icons/angle-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Angle.setIcon(icon6)
+        self.Angle.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
+        icon7 = QIcon()
+        icon7.addFile(u"icons/angle-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Angle.setIcon(icon7)
         self.Angle.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Angle)
 
         self.Rounding = QPushButton(self.frame_5)
         self.Rounding.setObjectName(u"Rounding")
-        icon7 = QIcon()
-        icon7.addFile(u"icons/Border-Corner-Rounded--Streamline-Tabler.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Rounding.setIcon(icon7)
+        self.Rounding.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
+        icon8 = QIcon()
+        icon8.addFile(u"icons/Border-Corner-Rounded--Streamline-Tabler.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Rounding.setIcon(icon8)
         self.Rounding.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Rounding)
 
         self.by_point = QPushButton(self.frame_5)
         self.by_point.setObjectName(u"by_point")
-        icon8 = QIcon()
-        icon8.addFile(u"icons/algorithm.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.by_point.setIcon(icon8)
+        self.by_point.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
+        icon9 = QIcon()
+        icon9.addFile(u"icons/algorithm.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.by_point.setIcon(icon9)
         self.by_point.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.by_point)
 
         self.Rectangle = QPushButton(self.frame_5)
         self.Rectangle.setObjectName(u"Rectangle")
-        icon9 = QIcon()
-        icon9.addFile(u"icons/rectangle-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Rectangle.setIcon(icon9)
+        self.Rectangle.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"")
+        icon10 = QIcon()
+        icon10.addFile(u"icons/rectangle-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Rectangle.setIcon(icon10)
         self.Rectangle.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Rectangle)
 
         self.Join = QPushButton(self.frame_5)
         self.Join.setObjectName(u"Join")
-        icon10 = QIcon()
-        icon10.addFile(u"icons/link-alt.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Join.setIcon(icon10)
+        self.Join.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
+        icon11 = QIcon()
+        icon11.addFile(u"icons/link-alt.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Join.setIcon(icon11)
         self.Join.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Join)
 
         self.Cut = QPushButton(self.frame_5)
         self.Cut.setObjectName(u"Cut")
-        icon11 = QIcon()
-        icon11.addFile(u"icons/cut-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
-        self.Cut.setIcon(icon11)
+        self.Cut.setStyleSheet(u"QPushButton {\n"
+"    background-color: #3c3c3c;\n"
+"    border-top: 1px solid #4a4a4a;\n"
+"    border-left: 1px solid #4a4a4a;\n"
+"    border-right: 1px solid #4a4a4a;\n"
+"    border-bottom: 1px solid #5b5b5b;\n"
+"    border-radius: 6px;\n"
+"    padding: 3px;\n"
+"}\n"
+"\n"
+"QPushButton:hover {\n"
+"    background-color: #444444;\n"
+"}\n"
+"\n"
+"QPushButton:pressed {\n"
+"    background-color: #2f2f2f;\n"
+"}\n"
+"\n"
+"")
+        icon12 = QIcon()
+        icon12.addFile(u"icons/cut-svgrepo-com.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.Cut.setIcon(icon12)
         self.Cut.setIconSize(QSize(24, 24))
 
         self.verticalLayout_7.addWidget(self.Cut)
@@ -329,15 +614,16 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"MainWindow", None))
         self.import_button.setText(QCoreApplication.translate("MainWindow", u"import", None))
+        self.pushButton_16.setText(QCoreApplication.translate("MainWindow", u"import sceen", None))
         self.save_button.setText(QCoreApplication.translate("MainWindow", u"save", None))
         self.layers_batton.setText(QCoreApplication.translate("MainWindow", u"Layers panel", None))
         self.ai_panel.setText(QCoreApplication.translate("MainWindow", u"AI panel", None))
         self.settings.setText(QCoreApplication.translate("MainWindow", u"settings", None))
-        self.pushButton_16.setText("")
         self.cursor_Button.setText("")
         self.palette_Button.setText("")
         self.tools_Button.setText("")
         self.eye_Button.setText("")
+        self.Resizable_button.setText("")
         self.label_7.setText(QCoreApplication.translate("MainWindow", u"object ", None))
         self.Cursor.setText("")
         self.Semicircle.setText("")

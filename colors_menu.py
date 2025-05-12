@@ -4,8 +4,18 @@ from PySide6.QtWidgets import QColorDialog
 def choose_color(self):
     color = QColorDialog.getColor()
     if color.isValid():
-        # Обновляем цвет кнопок
-        style = f"background-color: {color.name()};"
+        border_color = color.name()
+        style = f"""
+                QPushButton {{
+                    background-color: #3c3c3c;
+                    border-top:    1px solid {border_color};
+                    border-left:   1px solid {border_color};
+                    border-right:  1px solid {border_color};
+                    border-bottom: 1px solid {border_color};
+                    border-radius: 6px;
+                    padding: 3px;
+                }}
+            """
         self.ui.tools_Button.setStyleSheet(style)
         self.ui.palette_Button.setStyleSheet(style)
 
