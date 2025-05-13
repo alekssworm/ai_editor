@@ -16,7 +16,7 @@ def choose_color(self):
                     padding: 3px;
                 }}
             """
-        self.ui.tools_Button.setStyleSheet(style)
+
         self.ui.palette_Button.setStyleSheet(style)
 
         # Создаём копию цвета с альфой

@@ -14,6 +14,8 @@ class GraphicsViewWithZoom(QGraphicsView):
         self.current_zoom = 1.0
         self.is_panning = False
 
+
+
     def wheelEvent(self, event: QWheelEvent):
         factor = self.zoom_factor
         if event.modifiers() == Qt.ControlModifier:
@@ -29,3 +31,6 @@ class GraphicsViewWithZoom(QGraphicsView):
             if self.current_zoom > self.min_zoom:
                 self.scale(1 / factor, 1 / factor)
                 self.current_zoom /= factor
+
+
+

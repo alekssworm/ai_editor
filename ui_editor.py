@@ -16,9 +16,9 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsView,
-    QGridLayout, QHBoxLayout, QLabel, QMainWindow,
-    QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout,
-    QWidget)
+    QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QMainWindow, QPushButton, QSizePolicy, QSpacerItem,
+    QTreeView, QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -238,7 +238,7 @@ class Ui_MainWindow(object):
 
         self.comboBox_3 = QComboBox(self.layoutWidget_2)
         self.comboBox_3.setObjectName(u"comboBox_3")
-        self.comboBox_3.setMinimumSize(QSize(400, 0))
+        self.comboBox_3.setMinimumSize(QSize(220, 0))
 
         self.horizontalLayout_5.addWidget(self.comboBox_3)
 
@@ -249,6 +249,9 @@ class Ui_MainWindow(object):
 
         self.verticalLayout_5.addLayout(self.horizontalLayout_5)
 
+        self.label_8 = QLabel(self.frame)
+        self.label_8.setObjectName(u"label_8")
+        self.label_8.setGeometry(QRect(950, 80, 49, 16))
 
         self.horizontalLayout_6.addWidget(self.frame)
 
@@ -564,8 +567,6 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_10.addLayout(self.verticalLayout_9)
 
-        self.horizontalLayout_7 = QHBoxLayout()
-        self.horizontalLayout_7.setObjectName(u"horizontalLayout_7")
         self.frame_4 = QFrame(self.centralwidget)
         self.frame_4.setObjectName(u"frame_4")
         sizePolicy1 = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -576,28 +577,39 @@ class Ui_MainWindow(object):
         self.frame_4.setMinimumSize(QSize(250, 50))
         self.frame_4.setFrameShape(QFrame.Shape.StyledPanel)
         self.frame_4.setFrameShadow(QFrame.Shadow.Raised)
-        self.gridLayoutWidget = QWidget(self.frame_4)
-        self.gridLayoutWidget.setObjectName(u"gridLayoutWidget")
-        self.gridLayoutWidget.setGeometry(QRect(210, 0, 41, 41))
-        self.gridLayout_3 = QGridLayout(self.gridLayoutWidget)
-        self.gridLayout_3.setObjectName(u"gridLayout_3")
-        self.gridLayout_3.setContentsMargins(0, 0, 0, 0)
+        self.verticalLayout = QVBoxLayout(self.frame_4)
+        self.verticalLayout.setObjectName(u"verticalLayout")
+        self.horizontalLayout = QHBoxLayout()
+        self.horizontalLayout.setObjectName(u"horizontalLayout")
         self.horizontalSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
-        self.gridLayout_3.addItem(self.horizontalSpacer, 0, 0, 1, 1)
+        self.horizontalLayout.addItem(self.horizontalSpacer)
 
-        self.pushButton_17 = QPushButton(self.gridLayoutWidget)
-        self.pushButton_17.setObjectName(u"pushButton_17")
+        self.pushButton = QPushButton(self.frame_4)
+        self.pushButton.setObjectName(u"pushButton")
+        icon13 = QIcon()
+        icon13.addFile(u"icons/cross.svg", QSize(), QIcon.Mode.Normal, QIcon.State.Off)
+        self.pushButton.setIcon(icon13)
 
-        self.gridLayout_3.addWidget(self.pushButton_17, 0, 1, 1, 1)
+        self.horizontalLayout.addWidget(self.pushButton)
+
+
+        self.verticalLayout.addLayout(self.horizontalLayout)
+
+        self.treeView = QTreeView(self.frame_4)
+        self.treeView.setObjectName(u"treeView")
+
+        self.verticalLayout.addWidget(self.treeView)
 
         self.verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
-        self.gridLayout_3.addItem(self.verticalSpacer, 1, 1, 1, 1)
+        self.verticalLayout.addItem(self.verticalSpacer)
 
 
-        self.horizontalLayout_7.addWidget(self.frame_4)
+        self.horizontalLayout_10.addWidget(self.frame_4)
 
+        self.horizontalLayout_7 = QHBoxLayout()
+        self.horizontalLayout_7.setObjectName(u"horizontalLayout_7")
 
         self.horizontalLayout_10.addLayout(self.horizontalLayout_7)
 
@@ -624,7 +636,8 @@ class Ui_MainWindow(object):
         self.tools_Button.setText("")
         self.eye_Button.setText("")
         self.Resizable_button.setText("")
-        self.label_7.setText(QCoreApplication.translate("MainWindow", u"object ", None))
+        self.label_7.setText(QCoreApplication.translate("MainWindow", u"object :", None))
+        self.label_8.setText("")
         self.Cursor.setText("")
         self.Semicircle.setText("")
         self.Circle.setText("")
@@ -635,6 +648,6 @@ class Ui_MainWindow(object):
         self.Rectangle.setText("")
         self.Join.setText("")
         self.Cut.setText("")
-        self.pushButton_17.setText(QCoreApplication.translate("MainWindow", u"X", None))
+        self.pushButton.setText("")
     # retranslateUi
 

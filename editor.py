@@ -5,7 +5,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QGraphicsScene, QFileDi
 from ui_editor import Ui_MainWindow  # Это ваш сгенерированный класс
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFileDialog, QGraphicsScene, QGraphicsPixmapItem
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtWidgets import QLabel
 
 from import_image import import_image
 from zoom import GraphicsViewWithZoom
@@ -18,6 +19,15 @@ from Activate_disconect_button import activate_rectangle_mode ,deactivate_drawin
 from on_shape_selected import on_shape_selected
 from save_logic import save_outputs
 from show_all_handle import show_all_handles
+
+from m_event import MouseMoveFilter
+
+
+from navigation_overlay import NavigationOverlay
+
+
+
+
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +91,14 @@ class MainWindow(QMainWindow):
         self.ui.save_button.clicked.connect(lambda:save_outputs(self))
 
         self.ui.Resizable_button.clicked.connect(lambda:show_all_handles(self))
+
+        self.navigation_overlay = NavigationOverlay(self.ui.graphicsView, self)
+
+        # Подключаем фильтр движения мыши
+        self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
+        self.scene.installEventFilter(self.mouse_filter)
+
+
 
 
 if __name__ == "__main__":
