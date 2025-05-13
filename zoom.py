@@ -13,8 +13,8 @@ class GraphicsViewWithZoom(QGraphicsView):
         self.max_zoom = 3.0
         self.current_zoom = 1.0
         self.is_panning = False
-
-
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
     def wheelEvent(self, event: QWheelEvent):
         factor = self.zoom_factor

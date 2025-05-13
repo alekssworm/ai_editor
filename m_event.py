@@ -6,9 +6,9 @@ class MouseMoveFilter(QObject):
         self.navigation_overlay = navigation_overlay
         self.scene = scene
 
-    def eventFilter(self, source, event):
+    def eventFilter(self, obj, event):
         if event.type() == QEvent.GraphicsSceneMouseMove:
-            scene_pos = event.scenePos()
-            label = self.navigation_overlay.ui.label
-            label.setText(f"X:{int(scene_pos.x())}, Y:{int(scene_pos.y())} Object ID : 0 color:")
+            self.navigation_overlay.update_position(event.scenePos())
+            print(f"🧭 Mouse at: {event.scenePos()}")
+
         return False
