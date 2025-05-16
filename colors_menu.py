@@ -1,5 +1,6 @@
 from PySide6.QtGui import QBrush, QPen, QColor
 from PySide6.QtWidgets import QColorDialog
+from obj_list_logic import add_shape_to_list
 
 def choose_color(self):
     color = QColorDialog.getColor()
@@ -31,6 +32,9 @@ def choose_color(self):
             pen = item.pen() if hasattr(item, "pen") else QPen()
             pen.setColor(color)  # Контур остаётся непрозрачным
             item.setPen(pen)
+            shape_id = next((id_ for id_, obj in self.shape_registry.items() if obj is item), None)
+            if shape_id is not None:
+                add_shape_to_list(self.ui, shape_id, color)
 
         # Сохраняем для новых фигур
         self.current_shape_color = transparent_color

@@ -16,9 +16,9 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsView,
-    QGridLayout, QHBoxLayout, QHeaderView, QLabel,
-    QMainWindow, QPushButton, QSizePolicy, QSpacerItem,
-    QTreeView, QVBoxLayout, QWidget)
+    QGridLayout, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QMainWindow, QPushButton, QSizePolicy,
+    QSpacerItem, QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -596,10 +596,15 @@ class Ui_MainWindow(object):
 
         self.verticalLayout.addLayout(self.horizontalLayout)
 
-        self.treeView = QTreeView(self.frame_4)
-        self.treeView.setObjectName(u"treeView")
+        self.label = QLabel(self.frame_4)
+        self.label.setObjectName(u"label")
 
-        self.verticalLayout.addWidget(self.treeView)
+        self.verticalLayout.addWidget(self.label)
+
+        self.listWidget = QListWidget(self.frame_4)
+        self.listWidget.setObjectName(u"listWidget")
+
+        self.verticalLayout.addWidget(self.listWidget)
 
         self.verticalSpacer = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
@@ -649,5 +654,6 @@ class Ui_MainWindow(object):
         self.Join.setText("")
         self.Cut.setText("")
         self.pushButton.setText("")
+        self.label.setText(QCoreApplication.translate("MainWindow", u"Object list:", None))
     # retranslateUi
 

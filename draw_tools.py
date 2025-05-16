@@ -7,6 +7,7 @@ from PySide6.QtCore import QRectF
 
 from PySide6.QtWidgets import QGraphicsRectItem
 
+
 class ShapeItem:
     """Базовый класс для всех фигур"""
     pass

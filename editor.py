@@ -21,6 +21,8 @@ from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
 from m_event import MouseMoveFilter
+from obj_list_logic import add_shape_to_list
+
 
 
 class MainWindow(QMainWindow):
