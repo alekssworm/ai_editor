@@ -23,6 +23,13 @@ from navigation_overlay import NavigationOverlay
 from m_event import MouseMoveFilter
 from obj_list_logic import add_shape_to_list , on_list_item_selected
 
+from hide_unhide import toggle_all_fill
+
+from context_menu import on_key_press
+
+from obj_list_logic import remove_shape_from_list
+
+
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +84,15 @@ class MainWindow(QMainWindow):
         self.scene.installEventFilter(self.mouse_filter)
 
         self.ui.listWidget.itemClicked.connect(lambda item: on_list_item_selected(self, item))
+
+
+
+        self.keyPressEvent = lambda : on_key_press
+
+        self.fill_hidden_global = False
+        self.ui.eye_Button.clicked.connect(lambda: toggle_all_fill(self))
+
+
 
 
 if __name__ == "__main__":

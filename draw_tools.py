@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import  QGraphicsItem
+from PySide6.QtWidgets import QGraphicsItem, QMenu
 from PySide6.QtGui import QPen, QBrush, QColor
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGraphicsEllipseItem
@@ -77,6 +77,24 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         self.add_handles()
         self.hide_handles()
 
+        self.fill_visible = True
+        self.original_brush = self.brush()  # сохранить оригинальный цвет
+
+    def toggle_fill(self):
+        self.set_fill_visibility(not self.fill_visible)
+
+    def set_fill_visibility(self, visible: bool):
+        self.fill_visible = visible
+        if not visible:
+            # Скрыть заливку, оставить контур того же цвета
+            self.setBrush(Qt.transparent)
+            brush_color = self.original_brush.color() if self.original_brush else QColor(255, 255, 255)
+            pen = QPen(brush_color, 2, Qt.SolidLine)
+            self.setPen(pen)
+        else:
+            self.setBrush(self.original_brush)
+            self.setPen(QPen(Qt.transparent))  # Или оригинальный стиль
+
     def add_handles(self):
         br_handle = ResizeHandleItem(self, corner="br")
         br_handle.setPos(self.rect().bottomRight())
@@ -123,6 +141,28 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         self.show_handles()
         super().mouseDoubleClickEvent(event)
 
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        toggle_action = menu.addAction("Hide/Show fill")
+        delete_action = menu.addAction("delete")
+
+        action = menu.exec(event.screenPos())
+
+        if action == toggle_action:
+            self.toggle_fill()
+        elif action == delete_action:
+            scene = self.scene()
+            if scene and scene.views():
+                main_window = scene.views()[0].window()
+                if hasattr(main_window, "shape_registry"):
+                    for sid, obj in list(main_window.shape_registry.items()):
+                        if obj == self:
+                            from obj_list_logic import remove_shape_from_list
+                            remove_shape_from_list(main_window.ui, sid)
+                            del main_window.shape_registry[sid]
+                            break
+            scene.removeItem(self)
+
 
 class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
     _id_counter = 0
@@ -151,3 +191,34 @@ class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
         pen = self.pen()
         pen.setStyle(Qt.SolidLine)
         self.setPen(pen)
+
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        toggle_action = menu.addAction("Hide/Show fill")
+        delete_action = menu.addAction("delete")
+
+        action = menu.exec(event.screenPos())
+
+        if action == toggle_action:
+            self.toggle_fill()
+        elif action == delete_action:
+            self.scene().removeItem(self)
+            if hasattr(self.scene().parent(), "shape_registry"):
+                for sid, obj in self.scene().parent().shape_registry.items():
+                    if obj == self:
+                        del self.scene().parent().shape_registry[sid]
+                        break
+
+    def set_fill_visibility(self, visible: bool):
+        self.fill_visible = visible
+        if not visible:
+            # Скрыть заливку, оставить контур того же цвета
+            self.setBrush(Qt.transparent)
+            brush_color = self.original_brush.color() if self.original_brush else QColor(255, 255, 255)
+            pen = QPen(brush_color, 2, Qt.SolidLine)
+            self.setPen(pen)
+        else:
+            self.setBrush(self.original_brush)
+            self.setPen(QPen(Qt.transparent))  # Или оригинальный стиль
+
+

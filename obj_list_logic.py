@@ -50,3 +50,10 @@ def update_shape_in_list(ui, shape_id: int, color: QColor):
             item.setIcon(icon)
             break
 
+def remove_shape_from_list(ui, shape_id: int):
+    for i in range(ui.listWidget.count()):
+        item = ui.listWidget.item(i)
+        if f"ID: {shape_id}" in item.text():
+            ui.listWidget.takeItem(i)
+            break
+

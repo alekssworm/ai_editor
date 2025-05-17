@@ -26,6 +26,7 @@ def highlight_tool(self, active_button):
                         border: 1px solid {border_color};
                         border-radius: 6px;
                         padding: 3px;
+                        outline: none;
                     }}
                 """
             else:
@@ -39,6 +40,7 @@ def highlight_tool(self, active_button):
                         border-bottom: 1px solid #FFFFFF;
                         border-radius: 6px;
                         padding: 3px;
+                        outline: none;
                     }
                 """
             button.setStyleSheet(style)
@@ -54,6 +56,7 @@ def highlight_tool(self, active_button):
                     border-bottom: 1px solid #5b5b5b;
                     border-radius: 6px;
                     padding: 3px;
+                    outline: none;
                 }
             """)
 
