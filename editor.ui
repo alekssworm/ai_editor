@@ -64,7 +64,7 @@
                  </widget>
                 </item>
                 <item>
-                 <widget class="QPushButton" name="pushButton_16">
+                 <widget class="QPushButton" name="import_sceen">
                   <property name="text">
                    <string>import sceen</string>
                   </property>

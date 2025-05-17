@@ -1,9 +1,10 @@
-from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem, QGraphicsItem
+import os
+import json
+from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem
 from PySide6.QtGui import QImage, QPainter, Qt, QPainterPath
 from PySide6.QtCore import QPointF
-from draw_tools import SelectableCircleItem, ResizableRectItem
-import json
-import os
+from draw_tools import SelectableCircleItem, ResizableRectItem, ShapeItem
+
 
 def save_outputs(self):
     folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
@@ -19,16 +20,17 @@ def save_outputs(self):
         print("❌ Фон не найден.")
         return
 
+    original_image_path = background.data(Qt.UserRole) if background.data(Qt.UserRole) else ""
     original_image = background.pixmap().toImage()
 
-    # 1️⃣ Фоновое изображение + фигуры
+    # 📸 Сохраняем всю сцену с фигурами
     full_scene = QImage(size, QImage.Format_ARGB32)
     full_scene.fill(Qt.transparent)
     painter = QPainter(full_scene)
     self.scene.render(painter)
     painter.end()
 
-    # 2️⃣ Копия — будем вырезать все фигуры
+    # 🧽 Сцена без фигур (вырезаем их)
     image_without_shapes = QImage(full_scene)
     painter = QPainter(image_without_shapes)
     painter.setCompositionMode(QPainter.CompositionMode_Clear)
@@ -36,19 +38,15 @@ def save_outputs(self):
     shape_data = []
     index = 1
 
-    from draw_tools import ShapeItem
-
     for item in reversed(self.scene.items()):
         if not isinstance(item, ShapeItem):
             continue
-
-
 
         shape_rect = item.sceneBoundingRect().toRect()
         brush_color = item.brush().color().name()
         item_type = "Circle" if isinstance(item, SelectableCircleItem) else "Rectangle"
 
-        # ---- вырез из общей сцены
+        # Вырез фигуры из общего изображения
         if item_type == "Circle":
             path = QPainterPath()
             path.addEllipse(shape_rect)
@@ -57,7 +55,7 @@ def save_outputs(self):
         else:
             painter.fillRect(shape_rect, Qt.transparent)
 
-        # ---- вырез в отдельный файл
+        # Вырез фигуры в отдельный файл
         cut_size = shape_rect.size()
         cut_image = QImage(cut_size, QImage.Format_ARGB32)
         cut_image.fill(Qt.transparent)
@@ -81,7 +79,10 @@ def save_outputs(self):
         cut_image.save(cut_path)
         index += 1
 
+        shape_id = next((sid for sid, obj in self.shape_registry.items() if obj == item), index)
+
         shape_data.append({
+            "id": shape_id,
             "type": item_type,
             "x": int(shape_rect.x()),
             "y": int(shape_rect.y()),
@@ -92,11 +93,17 @@ def save_outputs(self):
 
     painter.end()
 
-    # 3️⃣ Сохраняем итог
+    # 💾 Сохраняем изображение без фигур
     image_without_shapes.save(os.path.join(folder, "image_without_shape_area.png"))
 
+    # 📄 Сохраняем shapes.json с изображением и фигурами
+    full_data = {
+        "background": original_image_path,
+        "shapes": shape_data
+    }
+
     with open(os.path.join(folder, "shapes.json"), "w", encoding="utf-8") as f:
-        json.dump(shape_data, f, indent=4)
+        json.dump(full_data, f, indent=4)
 
     print(f"✅ Сохранено {index - 1} фигур.")
 

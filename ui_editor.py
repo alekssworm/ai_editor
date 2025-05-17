@@ -59,10 +59,10 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_4.addWidget(self.import_button)
 
-        self.pushButton_16 = QPushButton(self.layoutWidget_2)
-        self.pushButton_16.setObjectName(u"pushButton_16")
+        self.import_sceen = QPushButton(self.layoutWidget_2)
+        self.import_sceen.setObjectName(u"import_sceen")
 
-        self.horizontalLayout_4.addWidget(self.pushButton_16)
+        self.horizontalLayout_4.addWidget(self.import_sceen)
 
         self.save_button = QPushButton(self.layoutWidget_2)
         self.save_button.setObjectName(u"save_button")
@@ -631,7 +631,7 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"MainWindow", None))
         self.import_button.setText(QCoreApplication.translate("MainWindow", u"import", None))
-        self.pushButton_16.setText(QCoreApplication.translate("MainWindow", u"import sceen", None))
+        self.import_sceen.setText(QCoreApplication.translate("MainWindow", u"import sceen", None))
         self.save_button.setText(QCoreApplication.translate("MainWindow", u"save", None))
         self.layers_batton.setText(QCoreApplication.translate("MainWindow", u"Layers panel", None))
         self.ai_panel.setText(QCoreApplication.translate("MainWindow", u"AI panel", None))

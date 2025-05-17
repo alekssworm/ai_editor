@@ -28,6 +28,7 @@ from hide_unhide import toggle_all_fill
 from context_menu import on_key_press
 
 from obj_list_logic import remove_shape_from_list
+from import_scene import load_scene
 
 
 
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         self.ui.eye_Button.clicked.connect(lambda: toggle_all_fill(self))
 
 
+        self.ui.import_sceen.clicked.connect(lambda: load_scene(self))
 
 
 if __name__ == "__main__":
