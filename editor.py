@@ -21,7 +21,7 @@ from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
 from m_event import MouseMoveFilter
-from obj_list_logic import add_shape_to_list
+from obj_list_logic import add_shape_to_list , on_list_item_selected
 
 
 
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
         self.scene.installEventFilter(self.mouse_filter)
 
-
+        self.ui.listWidget.itemClicked.connect(lambda item: on_list_item_selected(self, item))
 
 
 if __name__ == "__main__":

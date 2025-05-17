@@ -25,6 +25,13 @@ class ResizeHandleItem(QGraphicsRectItem):
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.corner = corner
 
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            glow_pen = QPen(QColor(255, 255, 255, 180), 2, Qt.DashLine)
+            painter.setPen(glow_pen)
+            painter.drawRect(self.rect())
+
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and self.scene():
             parent = self.parentItem()
@@ -60,7 +67,10 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         self._updating = False  # ДО setRect
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
         self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
-        self.setPen(QPen(Qt.white, 2, Qt.DashLine))
+
+        pen = QPen(Qt.transparent)  # По умолчанию без обводки
+        pen.setStyle(Qt.NoPen)
+        self.setPen(pen)
 
         self.setRect(rect)
         self.handles = []

@@ -34,7 +34,8 @@ def choose_color(self):
             item.setPen(pen)
             shape_id = next((id_ for id_, obj in self.shape_registry.items() if obj is item), None)
             if shape_id is not None:
-                add_shape_to_list(self.ui, shape_id, color)
+                from obj_list_logic import update_shape_in_list
+                update_shape_in_list(self.ui, shape_id, color)
 
         # Сохраняем для новых фигур
         self.current_shape_color = transparent_color
