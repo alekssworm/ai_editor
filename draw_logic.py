@@ -15,6 +15,17 @@ class DrawingToolController:
     def set_tool(self, tool_name):
         self.current_tool = tool_name
 
+    def mouseDoubleClickEvent(self, event):
+        if self.current_tool:
+            # Выключаем инструмент рисования
+            self.set_tool(None)
+            if self.parent:
+                from Activate_disconect_button import deactivate_drawing_mode
+                deactivate_drawing_mode(self.parent)
+
+        # Проверим, попали ли мы в фигуру — если да, Qt сам её выделит
+        # Мы не мешаем этому процессу, просто отключаем рисование
+
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent):
         if event.button() == Qt.LeftButton:
             color = self.parent.current_shape_color if self.parent else None

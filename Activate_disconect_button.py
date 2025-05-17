@@ -69,9 +69,7 @@ def activate_rectangle_mode(self):
     self.scene.mouseMoveEvent = self.draw_controller.mouseMoveEvent
     self.scene.mouseReleaseEvent = self.draw_controller.mouseReleaseEvent
     highlight_tool(self, self.ui.Rectangle)
-
-
-
+    self.scene.mouseDoubleClickEvent = self.draw_controller.mouseDoubleClickEvent
 
 
 def activate_circle_mode(self):
@@ -80,6 +78,7 @@ def activate_circle_mode(self):
     self.scene.mouseMoveEvent = self.draw_controller.mouseMoveEvent
     self.scene.mouseReleaseEvent = self.draw_controller.mouseReleaseEvent
     highlight_tool(self, self.ui.Circle)
+    self.scene.mouseDoubleClickEvent = self.draw_controller.mouseDoubleClickEvent
 
 
 def deactivate_drawing_mode(self):
@@ -99,3 +98,8 @@ def deactivate_drawing_mode(self):
     self.scene.mouseReleaseEvent = default_mouse_release
 
     highlight_tool(self, self.ui.Cursor)
+
+    def default_mouse_double_click(event):
+        QGraphicsScene.mouseDoubleClickEvent(self.scene, event)
+
+    self.scene.mouseDoubleClickEvent = default_mouse_double_click
