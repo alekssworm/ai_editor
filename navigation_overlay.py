@@ -49,10 +49,13 @@ class NavigationOverlay(QObject):
         hovered_id = "0"
         hovered_color = "transparent"
 
-        for shape_id, item in self.main_window.shape_registry.items():
-            if item.contains(item.mapFromScene(scene_pos)):
-                hovered_id = str(shape_id)
-                hovered_color = item.brush().color().name()
+        for item in self.main_window.scene.items(scene_pos):
+            for shape_id, shape_item in self.main_window.shape_registry.items():
+                if shape_item == item:
+                    hovered_id = str(shape_id)
+                    hovered_color = shape_item.brush().color().name()
+                    break
+            if hovered_id != "0":
                 break
 
         self.label.setText(
