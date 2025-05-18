@@ -19,7 +19,8 @@ def save_outputs(self):
 
     original_image_path = background.data(Qt.UserRole) if background.data(Qt.UserRole) else ""
     original_image = background.pixmap().toImage()
-    without_shape_image = QImage(original_image)  # ← рабочая копия без всех фигур
+    without_shape_image = QImage(original_image)
+    clean_parent_image = QImage(original_image)
 
     shape_data = []
     index = 1
@@ -36,14 +37,12 @@ def save_outputs(self):
         else:
             parents.append((shape_id, item))
 
-    all_shapes = children + parents
-
-    for shape_id, item in all_shapes:
+    # Сначала sub_obj
+    for shape_id, item in children:
         shape_rect = item.sceneBoundingRect().toRect()
         brush_color = item.brush().color().name()
         item_type = "Circle" if isinstance(item, SelectableCircleItem) else "Rectangle"
 
-        # 🎯 Вырезаем фигуру из изображения
         cut_size = shape_rect.size()
         cut_image = QImage(cut_size, QImage.Format_ARGB32)
         cut_image.fill(Qt.transparent)
@@ -51,24 +50,32 @@ def save_outputs(self):
         cut_painter.setPen(Qt.NoPen)
         offset = QPointF(-shape_rect.x(), -shape_rect.y())
         cut_painter.drawImage(offset, original_image)
-        cut_painter.end()
 
-        # 🧼 Пробиваем прозрачность в without_shape_image
-        painter_clear = QPainter(without_shape_image)
-        painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
         if item_type == "Circle":
             path = QPainterPath()
-            path.addEllipse(shape_rect)
-            painter_clear.setClipPath(path)
-            painter_clear.fillPath(path, Qt.transparent)
-        else:
-            painter_clear.fillRect(shape_rect, Qt.transparent)
-        painter_clear.end()
+            path.addEllipse(0, 0, cut_size.width(), cut_size.height())
+            cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            mask = QPainterPath()
+            mask.addRect(0, 0, cut_size.width(), cut_size.height())
+            mask = mask.subtracted(path)
+            cut_painter.fillPath(mask, Qt.transparent)
 
-        # 💾 Сохраняем PNG
+        cut_painter.end()
         cut_image.save(os.path.join(folder, f"shape_{index}.png"))
 
-        # 📄 Сохраняем метаданные
+        # Пробиваем в without_shape_image
+        for target in [without_shape_image, clean_parent_image]:
+            painter_clear = QPainter(target)
+            painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
+            if item_type == "Circle":
+                path = QPainterPath()
+                path.addEllipse(shape_rect)
+                painter_clear.setClipPath(path)
+                painter_clear.fillPath(path, Qt.transparent)
+            else:
+                painter_clear.fillRect(shape_rect, Qt.transparent)
+            painter_clear.end()
+
         shape_data.append({
             "id": shape_id,
             "type": item_type,
@@ -81,16 +88,64 @@ def save_outputs(self):
         })
         index += 1
 
-    # 💾 Сохраняем итоговое изображение без фигур
+    # Затем parents
+    for shape_id, item in parents:
+        shape_rect = item.sceneBoundingRect().toRect()
+        brush_color = item.brush().color().name()
+        item_type = "Circle" if isinstance(item, SelectableCircleItem) else "Rectangle"
+
+        cut_size = shape_rect.size()
+        cut_image = QImage(cut_size, QImage.Format_ARGB32)
+        cut_image.fill(Qt.transparent)
+        cut_painter = QPainter(cut_image)
+        cut_painter.setPen(Qt.NoPen)
+        offset = QPointF(-shape_rect.x(), -shape_rect.y())
+        cut_painter.drawImage(offset, clean_parent_image)
+
+        if item_type == "Circle":
+            path = QPainterPath()
+            path.addEllipse(0, 0, cut_size.width(), cut_size.height())
+            cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            mask = QPainterPath()
+            mask.addRect(0, 0, cut_size.width(), cut_size.height())
+            mask = mask.subtracted(path)
+            cut_painter.fillPath(mask, Qt.transparent)
+
+        cut_painter.end()
+        cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+
+        # Вырезаем из without_shape_image тоже
+        painter_clear = QPainter(without_shape_image)
+        painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
+        if item_type == "Circle":
+            path = QPainterPath()
+            path.addEllipse(shape_rect)
+            painter_clear.setClipPath(path)
+            painter_clear.fillPath(path, Qt.transparent)
+        else:
+            painter_clear.fillRect(shape_rect, Qt.transparent)
+        painter_clear.end()
+
+        shape_data.append({
+            "id": shape_id,
+            "type": item_type,
+            "x": int(shape_rect.x()),
+            "y": int(shape_rect.y()),
+            "width": int(shape_rect.width()),
+            "height": int(shape_rect.height()),
+            "color": brush_color,
+            "parent_id": self.shape_parents.get(shape_id)
+        })
+        index += 1
+
     without_shape_image.save(os.path.join(folder, "without_shape_area.png"))
 
-    # 📄 shapes.json
     with open(os.path.join(folder, "shapes.json"), "w", encoding="utf-8") as f:
         json.dump({
             "background": original_image_path,
             "shapes": shape_data
         }, f, indent=4)
 
-    print(f"✅ Сохранено {index - 1} фигур и финальное изображение.")
+    print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
 
 

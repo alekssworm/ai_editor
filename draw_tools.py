@@ -165,7 +165,7 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
             scene.removeItem(self)
 
 
-class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
+class SelectableCircleItem(QGraphicsEllipseItem, ShapeItem):
     _id_counter = 0
 
     def __init__(self, rect: QRectF, color=None, dashed=False):
@@ -175,23 +175,61 @@ class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
 
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
 
-        if color is not None:
-            pen = QPen(color, 2)
-            brush = QBrush(color)
+        self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
+        pen = QPen(Qt.transparent)
+        pen.setStyle(Qt.NoPen)
+        self.setPen(pen)
+
+        self.original_brush = self.brush()
+        self.fill_visible = True
+
+        self.handles = []
+        self.add_handles()
+        self.hide_handles()
+        self._updating = False
+
+    def toggle_fill(self):
+        self.set_fill_visibility(not self.fill_visible)
+
+    def set_fill_visibility(self, visible: bool):
+        self.fill_visible = visible
+        if not visible:
+            self.setBrush(Qt.transparent)
+            brush_color = self.original_brush.color() if self.original_brush else QColor(255, 255, 255)
+            pen = QPen(brush_color, 2, Qt.SolidLine)
+            self.setPen(pen)
         else:
-            pen = QPen(Qt.blue, 2)
-            brush = QBrush(QColor(0, 0, 255, 50))
+            self.setBrush(self.original_brush)
+            self.setPen(QPen(Qt.transparent))
 
-        if dashed:
-            pen.setStyle(Qt.DashLine)
+    def add_handles(self):
+        br_handle = ResizeHandleItem(self, corner="br")
+        br_handle.setPos(self.rect().bottomRight())
+        self.handles.append(br_handle)
 
-        self.setPen(pen)
-        self.setBrush(brush)
+    def update_from_handle(self, handle, new_pos):
+        if self._updating:
+            return
+        self._updating = True
 
-    def finalize(self):
-        pen = self.pen()
-        pen.setStyle(Qt.SolidLine)
-        self.setPen(pen)
+        if handle.corner == "br":
+            rect = QRectF(self.rect().topLeft(), self.mapFromScene(new_pos))
+            super().setRect(rect.normalized())  # прямой вызов super
+            handle.setPos(self.rect().bottomRight())
+
+        self._updating = False
+
+    def show_handles(self):
+        for handle in self.handles:
+            handle.show()
+
+    def hide_handles(self):
+        for handle in self.handles:
+            handle.hide()
+
+    def mouseDoubleClickEvent(self, event):
+        self.show_handles()
+        super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -203,23 +241,50 @@ class SelectableCircleItem(QGraphicsEllipseItem,ShapeItem):
         if action == toggle_action:
             self.toggle_fill()
         elif action == delete_action:
-            self.scene().removeItem(self)
-            if hasattr(self.scene().parent(), "shape_registry"):
-                for sid, obj in self.scene().parent().shape_registry.items():
-                    if obj == self:
-                        del self.scene().parent().shape_registry[sid]
-                        break
+            scene = self.scene()
+            if scene and scene.views():
+                main_window = scene.views()[0].window()
+                if hasattr(main_window, "shape_registry"):
+                    for sid, obj in list(main_window.shape_registry.items()):
+                        if obj == self:
+                            from obj_list_logic import remove_shape_from_list
+                            remove_shape_from_list(main_window.ui, sid)
+                            del main_window.shape_registry[sid]
+                            break
+            scene.removeItem(self)
 
-    def set_fill_visibility(self, visible: bool):
-        self.fill_visible = visible
-        if not visible:
-            # Скрыть заливку, оставить контур того же цвета
-            self.setBrush(Qt.transparent)
-            brush_color = self.original_brush.color() if self.original_brush else QColor(255, 255, 255)
-            pen = QPen(brush_color, 2, Qt.SolidLine)
-            self.setPen(pen)
-        else:
-            self.setBrush(self.original_brush)
-            self.setPen(QPen(Qt.transparent))  # Или оригинальный стиль
+    def setRect(self, rect):
+        if hasattr(self, "_updating") and self._updating:
+            return
+        self._updating = True
+
+        super().setRect(rect)
+
+        # Обновить позицию ручки
+        for handle in self.handles:
+            if handle and handle.scene():
+                handle.setPos(self.rect().bottomRight())
+
+        self._updating = False
+
+    def finalize(self):
+        if not hasattr(self, 'handles'):
+            self.handles = []
+
+        self.original_brush = self.brush()
+        self.fill_visible = True
+        self.set_fill_visibility(True)
+
+        try:
+            if self.scene() and self.isVisible():
+                for handle in self.handles:
+                    if handle and handle.scene():  # безопасная проверка
+                        handle.setPos(self.rect().bottomRight())
+
+        except RuntimeError:
+            pass  # handle уже удалён
+
+
+
 
 

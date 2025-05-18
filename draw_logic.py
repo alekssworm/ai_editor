@@ -2,6 +2,7 @@ from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsSceneMouseEvent
 from draw_tools import ResizableRectItem, SelectableCircleItem  # Импортируем оба
 from obj_list_logic import add_shape_to_list
+from PySide6.QtCore import QTimer  # вверху
 
 class DrawingToolController:
     def __init__(self, scene,parent=None):
@@ -69,9 +70,19 @@ class DrawingToolController:
                 rect = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
                 self.current_item.setRect(rect)
 
+
+
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent):
         if self.drawing:
             if self.current_tool == "circle" and self.current_item:
-                self.current_item.finalize()
+                def safe_finalize():
+                    if hasattr(self.current_item, "finalize"):
+                        try:
+                            self.current_item.finalize()
+                        except Exception as e:
+                            print("Finalize error:", e)
+
+                QTimer.singleShot(0, safe_finalize)
+
             self.drawing = False
             self.current_item = None
