@@ -76,6 +76,7 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         self.handles = []
         self.add_handles()
         self.hide_handles()
+        self.setPen(Qt.NoPen)  # Убирает обводку полностью
 
         self.fill_visible = True
         self.original_brush = self.brush()  # сохранить оригинальный цвет

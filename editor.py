@@ -96,6 +96,8 @@ class MainWindow(QMainWindow):
 
         self.ui.import_sceen.clicked.connect(lambda: load_scene(self))
 
+        self.shape_parents = {}  # {child_id: parent_id}
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

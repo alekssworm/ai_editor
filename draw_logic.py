@@ -23,37 +23,39 @@ class DrawingToolController:
                 from Activate_disconect_button import deactivate_drawing_mode
                 deactivate_drawing_mode(self.parent)
 
-        # Проверим, попали ли мы в фигуру — если да, Qt сам её выделит
-        # Мы не мешаем этому процессу, просто отключаем рисование
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent):
         if event.button() == Qt.LeftButton:
             color = self.parent.current_shape_color if self.parent else None
 
-            # Общая логика регистрации фигуры
             shape_id = self.parent.shape_id_counter
             self.parent.shape_id_counter += 1
 
+            self.drawing = True
+            self.start_point = event.scenePos()
+            rect = QRectF(self.start_point, self.start_point)
+
             if self.current_tool == "rectangle":
-                self.drawing = True
-                self.start_point = event.scenePos()
-                rect = QRectF(self.start_point, self.start_point)
                 self.current_item = ResizableRectItem(rect, color)
-                self.scene.addItem(self.current_item)
-                self.parent.shape_registry[shape_id] = self.current_item
-
-
             elif self.current_tool == "circle":
-                self.drawing = True
-                self.start_point = event.scenePos()
-                rect = QRectF(self.start_point, self.start_point)
                 self.current_item = SelectableCircleItem(rect, color, dashed=True)
-                self.scene.addItem(self.current_item)
-                self.parent.shape_registry[shape_id] = self.current_item
+            else:
+                return
 
-            if self.parent:
-                from obj_list_logic import add_shape_to_list
-                add_shape_to_list(self.parent.ui, shape_id, color)
+            self.scene.addItem(self.current_item)
+            self.parent.shape_registry[shape_id] = self.current_item
+
+            # 💡 Проверка вложенности для sub_obj
+            parent_id = None
+            new_item_rect = self.current_item.sceneBoundingRect()
+            for sid, obj in self.parent.shape_registry.items():
+                if obj is not self.current_item and obj.sceneBoundingRect().contains(new_item_rect.center()):
+                    parent_id = sid
+                    break
+            self.parent.shape_parents[shape_id] = parent_id
+
+            from obj_list_logic import add_shape_to_list
+            add_shape_to_list(self.parent.ui, shape_id, color)
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent):
         if self.drawing and self.current_item:

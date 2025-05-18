@@ -31,6 +31,8 @@ def load_scene(self):
         self.scene.addItem(bg_item)
         self.ui.graphicsView.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
+    self.shape_parents = {}
+
     # 5. Восстановление фигур
     for shape in shapes:
         shape_id = shape.get("id")
@@ -39,6 +41,10 @@ def load_scene(self):
         w, h = shape["width"], shape["height"]
         color = QColor(shape["color"])
         color.setAlpha(50)
+
+        parent_id = shape.get("parent_id")
+        if parent_id is not None:
+            self.shape_parents[shape_id] = parent_id
 
         if item_type == "Rectangle":
             item = ResizableRectItem(QRectF(x, y, w, h), color)
