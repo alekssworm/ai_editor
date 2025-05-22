@@ -1,5 +1,6 @@
 from PySide6.QtGui import QColor
-from draw_tools import ResizableRectItem , SelectableCircleItem
+from draw_tools import ResizableRectItem, SelectableCircleItem, SelectablePolygonItem
+
 
 def on_shape_selected(self):
     selected_items = self.scene.selectedItems()
@@ -20,6 +21,10 @@ def on_shape_selected(self):
         shape_type = "Rectangle"
     elif isinstance(item, SelectableCircleItem):
         shape_type = "Circle"
+
+    elif isinstance(item, SelectablePolygonItem):
+        shape_type = "Polygon"
+
     else:
         shape_type = "Unknown"
 

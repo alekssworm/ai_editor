@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QGraphicsItem, QMenu
+from PySide6.QtWidgets import QGraphicsItem, QMenu, QGraphicsPolygonItem
 from PySide6.QtGui import QPen, QBrush, QColor
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGraphicsEllipseItem
@@ -285,6 +285,49 @@ class SelectableCircleItem(QGraphicsEllipseItem, ShapeItem):
             pass  # handle уже удалён
 
 
+class SelectablePolygonItem(QGraphicsPolygonItem, ShapeItem):
+    def __init__(self, polygon, color=None):
+        super().__init__(polygon)
+        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
+        self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
+
+        self.original_brush = self.brush()
+        self.fill_visible = True
+
+    def toggle_fill(self):
+        self.set_fill_visibility(not self.fill_visible)
+
+    def set_fill_visibility(self, visible: bool):
+        self.fill_visible = visible
+        if not visible:
+            self.setBrush(Qt.transparent)
+            pen = QPen(self.original_brush.color(), 2, Qt.SolidLine)
+            self.setPen(pen)
+        else:
+            self.setBrush(self.original_brush)
+            self.setPen(QPen(Qt.transparent))
+
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        toggle_action = menu.addAction("Hide/Show fill")
+        delete_action = menu.addAction("Delete")
+
+        action = menu.exec(event.screenPos())
+
+        if action == toggle_action:
+            self.toggle_fill()
+        elif action == delete_action:
+            scene = self.scene()
+            if scene and scene.views():
+                main_window = scene.views()[0].window()
+                if hasattr(main_window, "shape_registry"):
+                    for sid, obj in list(main_window.shape_registry.items()):
+                        if obj == self:
+                            from obj_list_logic import remove_shape_from_list
+                            remove_shape_from_list(main_window.ui, sid)
+                            del main_window.shape_registry[sid]
+                            break
+            scene.removeItem(self)
 
 
 

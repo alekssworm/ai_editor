@@ -1,3 +1,9 @@
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QPolygonF
+
+from draw_tools import SelectablePolygonItem
+
+
 def load_scene(self):
     from draw_tools import ResizableRectItem, SelectableCircleItem
     from obj_list_logic import add_shape_to_list
@@ -50,6 +56,11 @@ def load_scene(self):
             item = ResizableRectItem(QRectF(x, y, w, h), color)
         elif item_type == "Circle":
             item = SelectableCircleItem(QRectF(x, y, w, h), color)
+        elif item_type == "Polygon":
+            points = shape["points"]
+            polygon = QPolygonF([QPointF(p["x"], p["y"]) for p in points])
+            item = SelectablePolygonItem(polygon, color)
+
         else:
             continue
 

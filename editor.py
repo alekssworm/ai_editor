@@ -29,6 +29,7 @@ from context_menu import on_key_press
 
 from obj_list_logic import remove_shape_from_list
 from import_scene import load_scene
+from Activate_disconect_button import activate_polygon_mode
 
 
 
@@ -97,6 +98,10 @@ class MainWindow(QMainWindow):
         self.ui.import_sceen.clicked.connect(lambda: load_scene(self))
 
         self.shape_parents = {}  # {child_id: parent_id}
+
+
+
+        self.ui.by_point.clicked.connect(lambda: activate_polygon_mode(self))
 
 
 if __name__ == "__main__":

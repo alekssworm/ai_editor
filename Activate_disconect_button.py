@@ -6,7 +6,8 @@ def highlight_tool(self, active_button):
     buttons = [
         self.ui.Cursor,
         self.ui.Rectangle,
-        self.ui.Circle
+        self.ui.Circle,
+        self.ui.by_point
     ]
 
     # Получаем текущий цвет из self.current_shape_color (из colors_menu)
@@ -103,3 +104,10 @@ def deactivate_drawing_mode(self):
         QGraphicsScene.mouseDoubleClickEvent(self.scene, event)
 
     self.scene.mouseDoubleClickEvent = default_mouse_double_click
+
+
+def activate_polygon_mode(self):
+    self.draw_controller.set_tool("polygon")
+    self.scene.mousePressEvent = self.draw_controller.mousePressEvent
+    highlight_tool(self, self.ui.by_point)
+    self.scene.mouseDoubleClickEvent = self.draw_controller.mouseDoubleClickEvent
