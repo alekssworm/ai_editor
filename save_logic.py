@@ -37,112 +37,68 @@ def save_outputs(self):
         else:
             parents.append((shape_id, item))
 
-    for group in [children, parents]:
-        for shape_id, item in group:
-            shape_rect = item.sceneBoundingRect().toRect()
-            brush_color = item.brush().color().name()
+    parent_ids = [sid for sid, _ in parents]
 
-            if isinstance(item, SelectableCircleItem):
-                item_type = "Circle"
-            elif isinstance(item, ResizableRectItem):
-                item_type = "Rectangle"
-            elif isinstance(item, SelectablePolygonItem):
-                item_type = "Polygon"
-            else:
-                continue
+    # Сначала сохраняем sub-объекты (children)
+    for shape_id, item in children:
+        shape_rect = item.sceneBoundingRect().toRect()
+        brush_color = item.brush().color().name()
 
-            if item_type == "Polygon":
-                # Глобальный путь (для вырезания из общего изображения)
-                scene_polygon = item.mapToScene(item.polygon())
-                polygon_path = QPainterPath()
-                polygon_path.addPolygon(scene_polygon)
+        if isinstance(item, SelectableCircleItem):
+            item_type = "Circle"
+            path = QPainterPath()
+            path.addEllipse(0, 0, shape_rect.width(), shape_rect.height())
+        elif isinstance(item, ResizableRectItem):
+            item_type = "Rectangle"
+            path = QPainterPath()
+            path.addRect(0, 0, shape_rect.width(), shape_rect.height())
+        elif isinstance(item, SelectablePolygonItem):
+            item_type = "Polygon"
+            polygon = item.polygon()
+            path = QPainterPath()
+            path.addPolygon(polygon.translated(-shape_rect.topLeft()))
+        else:
+            continue
 
-                # Локальный путь (для cut_image)
-                shape_rect = item.sceneBoundingRect().toRect()
-                translated_polygon = item.polygon().translated(-shape_rect.topLeft())
-                translated_path = QPainterPath()
-                translated_path.addPolygon(translated_polygon)
+        original_crop = original_image.copy(shape_rect)
+        cut_image = QImage(shape_rect.size(), QImage.Format_ARGB32)
+        cut_image.fill(Qt.transparent)
 
-                # Вырезаем из original_image по shape_rect
-                original_crop = original_image.copy(shape_rect)
-                cut_image = QImage(shape_rect.size(), QImage.Format_ARGB32)
-                cut_image.fill(Qt.transparent)
+        cut_painter = QPainter(cut_image)
+        cut_painter.drawImage(0, 0, original_crop)
+        cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
 
-                cut_painter = QPainter(cut_image)
-                cut_painter.drawImage(0, 0, original_crop)
-                cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+        mask = QPainterPath()
+        mask.addRect(0, 0, shape_rect.width(), shape_rect.height())
+        mask = mask.subtracted(path)
 
-                mask = QPainterPath()
-                mask.addRect(0, 0, shape_rect.width(), shape_rect.height())
-                mask = mask.subtracted(translated_path)
-                cut_painter.fillPath(mask, Qt.transparent)
-                cut_painter.end()
+        cut_painter.fillPath(mask, Qt.transparent)
+        cut_painter.end()
 
-                cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+        cut_image.save(os.path.join(folder, f"shape_{index}.png"))
 
-                # Вырезаем из сцены
-                for target in [without_shape_image, clean_parent_image]:
-                    painter_clear = QPainter(target)
-                    painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
+        global_path = QPainterPath()
+        if isinstance(item, SelectablePolygonItem):
+            global_path.addPolygon(item.mapToScene(item.polygon()))
+        else:
+            global_path.addRect(shape_rect)
 
-                    sub_path = QPainterPath()
-                    sub_path.addPath(polygon_path)
+        for target in [without_shape_image, clean_parent_image]:
+            painter_clear = QPainter(target)
+            painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter_clear.setClipPath(global_path)
+            painter_clear.fillPath(global_path, Qt.transparent)
+            painter_clear.end()
 
-                    for sid2, sub_item in self.shape_registry.items():
-                        if self.shape_parents.get(sid2) == shape_id and isinstance(sub_item, SelectablePolygonItem):
-                            sub_poly = sub_item.mapToScene(sub_item.polygon())
-                            sub_p = QPainterPath()
-                            sub_p.addPolygon(sub_poly)
-                            sub_path = sub_path.subtracted(sub_p)
-
-                    painter_clear.setClipPath(sub_path)
-                    painter_clear.fillPath(sub_path, Qt.transparent)
-                    painter_clear.end()
-
-                # JSON
-                shape_data.append({
-                    "id": shape_id,
-                    "type": "Polygon",
-                    "points": [{"x": int(p.x()), "y": int(p.y())} for p in item.polygon()],
-                    "color": brush_color,
-                    "parent_id": self.shape_parents.get(shape_id)
-                })
-
-                index += 1
-                continue
-
-            cut_size = shape_rect.size()
-            cut_image = QImage(cut_size, QImage.Format_ARGB32)
-            cut_image.fill(Qt.transparent)
-            cut_painter = QPainter(cut_image)
-            cut_painter.setPen(Qt.NoPen)
-            offset = QPointF(-shape_rect.x(), -shape_rect.y())
-            cut_painter.drawImage(offset, clean_parent_image if group is parents else original_image)
-
-            if item_type == "Circle":
-                path = QPainterPath()
-                path.addEllipse(0, 0, cut_size.width(), cut_size.height())
-                cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
-                mask = QPainterPath()
-                mask.addRect(0, 0, cut_size.width(), cut_size.height())
-                mask = mask.subtracted(path)
-                cut_painter.fillPath(mask, Qt.transparent)
-
-            cut_painter.end()
-            cut_image.save(os.path.join(folder, f"shape_{index}.png"))
-
-            for target in [without_shape_image, clean_parent_image]:
-                painter_clear = QPainter(target)
-                painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
-                if item_type == "Circle":
-                    path = QPainterPath()
-                    path.addEllipse(shape_rect)
-                    painter_clear.setClipPath(path)
-                    painter_clear.fillPath(path, Qt.transparent)
-                else:
-                    painter_clear.fillRect(shape_rect, Qt.transparent)
-                painter_clear.end()
-
+        if item_type == "Polygon":
+            shape_data.append({
+                "id": shape_id,
+                "type": "Polygon",
+                "points": [{"x": int(p.x()), "y": int(p.y())} for p in item.polygon()],
+                "color": brush_color,
+                "parent_id": self.shape_parents.get(shape_id)
+            })
+        else:
             shape_data.append({
                 "id": shape_id,
                 "type": item_type,
@@ -153,7 +109,96 @@ def save_outputs(self):
                 "color": brush_color,
                 "parent_id": self.shape_parents.get(shape_id)
             })
-            index += 1
+
+        index += 1
+
+    # Затем сохраняем родителей (parents) — с вычитанием вложенных фигур
+    for shape_id, item in parents:
+        shape_rect = item.sceneBoundingRect().toRect()
+        brush_color = item.brush().color().name()
+
+        if isinstance(item, SelectableCircleItem):
+            item_type = "Circle"
+            path = QPainterPath()
+            path.addEllipse(0, 0, shape_rect.width(), shape_rect.height())
+        elif isinstance(item, ResizableRectItem):
+            item_type = "Rectangle"
+            path = QPainterPath()
+            path.addRect(0, 0, shape_rect.width(), shape_rect.height())
+        elif isinstance(item, SelectablePolygonItem):
+            item_type = "Polygon"
+            polygon = item.polygon()
+            path = QPainterPath()
+            path.addPolygon(polygon.translated(-shape_rect.topLeft()))
+        else:
+            continue
+
+        original_crop = clean_parent_image.copy(shape_rect)
+        cut_image = QImage(shape_rect.size(), QImage.Format_ARGB32)
+        cut_image.fill(Qt.transparent)
+
+        cut_painter = QPainter(cut_image)
+        cut_painter.drawImage(0, 0, original_crop)
+        cut_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+
+        mask = QPainterPath()
+        mask.addRect(0, 0, shape_rect.width(), shape_rect.height())
+        mask = mask.subtracted(path)
+
+        for sid2, sub_item in self.shape_registry.items():
+            if self.shape_parents.get(sid2) == shape_id:
+                sub_path = QPainterPath()
+                if isinstance(sub_item, SelectablePolygonItem):
+                    translated_sub_polygon = sub_item.polygon().translated(
+                        sub_item.scenePos() - item.scenePos()
+                    )
+                    sub_path.addPolygon(translated_sub_polygon)
+                elif isinstance(sub_item, ResizableRectItem):
+                    sub_rect = sub_item.sceneBoundingRect().translated(-shape_rect.topLeft())
+                    sub_path.addRect(sub_rect)
+                elif isinstance(sub_item, SelectableCircleItem):
+                    sub_rect = sub_item.sceneBoundingRect().translated(-shape_rect.topLeft())
+                    sub_path.addEllipse(sub_rect)
+                mask = mask.subtracted(sub_path)
+
+        cut_painter.fillPath(mask, Qt.transparent)
+        cut_painter.end()
+
+        cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+
+        global_path = QPainterPath()
+        if isinstance(item, SelectablePolygonItem):
+            global_path.addPolygon(item.mapToScene(item.polygon()))
+        else:
+            global_path.addRect(shape_rect)
+
+        painter_clear = QPainter(without_shape_image)
+        painter_clear.setCompositionMode(QPainter.CompositionMode_Clear)
+        painter_clear.setClipPath(global_path)
+        painter_clear.fillPath(global_path, Qt.transparent)
+        painter_clear.end()
+
+        if item_type == "Polygon":
+            shape_data.append({
+                "id": shape_id,
+                "type": "Polygon",
+                "points": [{"x": int(p.x()), "y": int(p.y())} for p in item.polygon()],
+                "color": brush_color,
+                "parent_id": self.shape_parents.get(shape_id)
+            })
+        else:
+            shape_data.append({
+                "id": shape_id,
+                "type": item_type,
+                "x": int(shape_rect.x()),
+                "y": int(shape_rect.y()),
+                "width": int(shape_rect.width()),
+                "height": int(shape_rect.height()),
+                "color": brush_color,
+                "parent_id": self.shape_parents.get(shape_id)
+            })
+
+        index += 1
 
     without_shape_image.save(os.path.join(folder, "without_shape_area.png"))
 
@@ -164,5 +209,3 @@ def save_outputs(self):
         }, f, indent=4)
 
     print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
-
-
