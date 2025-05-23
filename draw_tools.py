@@ -289,19 +289,27 @@ class SelectablePolygonItem(QGraphicsPolygonItem, ShapeItem):
     def __init__(self, polygon, color=None):
         super().__init__(polygon)
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable)
-        self.setBrush(QBrush(color if color else QColor(255, 0, 0, 50)))
 
-        self.original_brush = self.brush()
+        initial_brush = QBrush(color if color else QColor(255, 0, 0, 50))
+        self.setBrush(initial_brush)
+
+        # ВАЖНО: сохраняем копию кисти, а не ссылку
+        self.original_brush = QBrush(initial_brush)
         self.fill_visible = True
 
     def toggle_fill(self):
         self.set_fill_visibility(not self.fill_visible)
 
+    def update_original_brush(self):
+        # Обновляем оригинальный цвет после смены
+        self.original_brush = QBrush(self.brush())
+
     def set_fill_visibility(self, visible: bool):
         self.fill_visible = visible
         if not visible:
             self.setBrush(Qt.transparent)
-            pen = QPen(self.original_brush.color(), 2, Qt.SolidLine)
+            brush_color = self.original_brush.color() if self.original_brush else QColor(255, 255, 255)
+            pen = QPen(brush_color, 2, Qt.SolidLine)
             self.setPen(pen)
         else:
             self.setBrush(self.original_brush)
@@ -328,6 +336,5 @@ class SelectablePolygonItem(QGraphicsPolygonItem, ShapeItem):
                             del main_window.shape_registry[sid]
                             break
             scene.removeItem(self)
-
 
 

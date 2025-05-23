@@ -30,6 +30,8 @@ def choose_color(self):
         for item in selected_items:
             if isinstance(item, (ResizableRectItem, SelectableCircleItem, SelectablePolygonItem)):
                 item.setBrush(QBrush(transparent_color))
+                if isinstance(item, SelectablePolygonItem):
+                    item.update_original_brush()
 
                 pen = item.pen() if hasattr(item, "pen") else QPen()
                 pen.setColor(color)  # Контур остаётся непрозрачным
@@ -38,6 +40,7 @@ def choose_color(self):
                 if shape_id is not None:
                     from obj_list_logic import update_shape_in_list
                     update_shape_in_list(self.ui, shape_id, color)
+
 
         # Сохраняем для новых фигур
         self.current_shape_color = transparent_color

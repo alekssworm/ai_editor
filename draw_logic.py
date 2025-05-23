@@ -143,6 +143,10 @@ class DrawingToolController:
         fill_color = self.parent.current_shape_color if self.parent else QColor(255, 0, 0, 50)
         polygon.setBrush(fill_color)
 
+        # 💡 Обновляем оригинальный цвет заливки
+        if hasattr(polygon, "update_original_brush"):
+            polygon.update_original_brush()
+
         polygon.setPen(QPen(Qt.transparent))
         self.scene.addItem(polygon)
 
@@ -150,7 +154,7 @@ class DrawingToolController:
         self.parent.shape_id_counter += 1
         self.parent.shape_registry[shape_id] = polygon
         self.parent.shape_parents[shape_id] = None
-        add_shape_to_list(self.parent.ui, shape_id, QColor(255, 0, 0, 100))
+        add_shape_to_list(self.parent.ui, shape_id, polygon.brush().color())
 
         parent_id = None
         polygon_rect = polygon.sceneBoundingRect()
