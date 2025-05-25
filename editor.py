@@ -31,6 +31,8 @@ from obj_list_logic import remove_shape_from_list
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
 from ai_panel_logic import AIWindow
+from m_event import MouseMoveFilter
+
 
 
 
@@ -103,6 +105,8 @@ class MainWindow(QMainWindow):
         self.ui.ai_panel.clicked.connect(self.ai_window.show)
 
 
+        self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
+        self.scene.installEventFilter(self.mouse_filter)
 
 
 if __name__ == "__main__":
