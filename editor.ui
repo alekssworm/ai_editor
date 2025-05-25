@@ -92,6 +92,13 @@
                  </widget>
                 </item>
                 <item>
+                 <widget class="QPushButton" name="preview_button">
+                  <property name="text">
+                   <string>preview</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="QPushButton" name="settings">
                   <property name="text">
                    <string>settings</string>

@@ -79,6 +79,11 @@ class Ui_MainWindow(object):
 
         self.horizontalLayout_4.addWidget(self.ai_panel)
 
+        self.preview_button = QPushButton(self.layoutWidget_2)
+        self.preview_button.setObjectName(u"preview_button")
+
+        self.horizontalLayout_4.addWidget(self.preview_button)
+
         self.settings = QPushButton(self.layoutWidget_2)
         self.settings.setObjectName(u"settings")
 
@@ -635,6 +640,7 @@ class Ui_MainWindow(object):
         self.save_button.setText(QCoreApplication.translate("MainWindow", u"save", None))
         self.layers_batton.setText(QCoreApplication.translate("MainWindow", u"Layers panel", None))
         self.ai_panel.setText(QCoreApplication.translate("MainWindow", u"AI panel", None))
+        self.preview_button.setText(QCoreApplication.translate("MainWindow", u"preview", None))
         self.settings.setText(QCoreApplication.translate("MainWindow", u"settings", None))
         self.cursor_Button.setText("")
         self.palette_Button.setText("")

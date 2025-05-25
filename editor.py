@@ -20,7 +20,7 @@ from save_logic import save_outputs
 from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
-from m_event import MouseMoveFilter
+
 from obj_list_logic import add_shape_to_list , on_list_item_selected
 
 from hide_unhide import toggle_all_fill
@@ -30,6 +30,8 @@ from context_menu import on_key_press
 from obj_list_logic import remove_shape_from_list
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
+from ai_panel_logic import AIWindow
+
 
 
 
@@ -81,13 +83,9 @@ class MainWindow(QMainWindow):
         # 🧠 Важно: добавляем overlay после сцены
         self.navigation_overlay = NavigationOverlay(self.ui.graphicsView, self)
 
-        # 🐭 Установка фильтра мыши на сцену
-        self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
-        self.scene.installEventFilter(self.mouse_filter)
+
 
         self.ui.listWidget.itemClicked.connect(lambda item: on_list_item_selected(self, item))
-
-
 
         self.keyPressEvent = lambda : on_key_press
 
@@ -99,9 +97,12 @@ class MainWindow(QMainWindow):
 
         self.shape_parents = {}  # {child_id: parent_id}
 
-
-
         self.ui.by_point.clicked.connect(lambda: activate_polygon_mode(self))
+
+        self.ai_window = AIWindow()
+        self.ui.ai_panel.clicked.connect(self.ai_window.show)
+
+
 
 
 if __name__ == "__main__":

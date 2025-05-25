@@ -61,8 +61,10 @@ class DrawingToolController:
 
             if self.current_tool == "rectangle":
                 self.current_item = ResizableRectItem(rect, color)
+                shape_type = "Rectangle"
             elif self.current_tool == "circle":
                 self.current_item = SelectableCircleItem(rect, color, dashed=True)
+                shape_type = "Circle"
 
             self.scene.addItem(self.current_item)
             self.parent.shape_registry[shape_id] = self.current_item
@@ -76,6 +78,10 @@ class DrawingToolController:
             self.parent.shape_parents[shape_id] = parent_id
             add_shape_to_list(self.parent.ui, shape_id, color)
 
+
+            if hasattr(self.parent, "ai_window") and hasattr(self.parent.ai_window, "add_shape_card"):
+                self.parent.ai_window.add_shape_card(shape_id, shape_type, color.name())
+
         elif self.current_tool == "polygon":
             point = event.scenePos()
             self.polygon_points.append(point)
@@ -87,7 +93,7 @@ class DrawingToolController:
             self.scene.addItem(dot)
             self.polygon_items.append(dot)
 
-            if len(self.polygon_points) > 1:
+            if len(self.polygon_points ) > 1 :
                 line = QGraphicsLineItem(
                     self.polygon_points[-2].x(), self.polygon_points[-2].y(),
                     point.x(), point.y()
@@ -101,6 +107,7 @@ class DrawingToolController:
                     dist = (point - self.polygon_points[0]).manhattanLength()
                     if dist < 15:
                         self.finish_polygon()
+
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent):
         if self.drawing and self.current_item:
@@ -139,8 +146,9 @@ class DrawingToolController:
                 deactivate_drawing_mode(self.parent)
 
     def finish_polygon(self):
-        polygon = SelectablePolygonItem(QPolygonF(self.polygon_points), QColor(255, 0, 0, 100))
+        shape_type = "Polygon"  # ✅ Явно указываем тип
         fill_color = self.parent.current_shape_color if self.parent else QColor(255, 0, 0, 50)
+        polygon = SelectablePolygonItem(QPolygonF(self.polygon_points), fill_color)
         polygon.setBrush(fill_color)
 
         # 💡 Обновляем оригинальный цвет заливки
@@ -156,6 +164,11 @@ class DrawingToolController:
         self.parent.shape_parents[shape_id] = None
         add_shape_to_list(self.parent.ui, shape_id, polygon.brush().color())
 
+        # ✅ Добавляем карточку в AI окно
+        if hasattr(self.parent, "ai_window") and hasattr(self.parent.ai_window, "add_shape_card"):
+            self.parent.ai_window.add_shape_card(shape_id, shape_type, fill_color.name())
+
+        # Назначаем родителя, если вложен
         parent_id = None
         polygon_rect = polygon.sceneBoundingRect()
         for sid, obj in self.parent.shape_registry.items():
@@ -166,3 +179,4 @@ class DrawingToolController:
         self.parent.shape_parents[shape_id] = parent_id
 
         self.clear_polygon_temp()
+
