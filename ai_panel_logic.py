@@ -1,63 +1,19 @@
 from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsProxyWidget,
-    QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QPushButton, QGraphicsItem
+    QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem
 )
-from PySide6.QtGui import QPainter, QColor, QDrag, QPixmap
-from PySide6.QtCore import Qt, QMimeData, QPoint
+from PySide6.QtGui import QPainter, QColor
+from PySide6.QtCore import Qt, QPointF
 
 from ui_ai_window import Ui_MainWindow as UiAIWindow
-
-
-class DraggableButton(QPushButton):
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton:
-            drag = QDrag(self)
-            mime = QMimeData()
-            mime.setText(self.text())
-            drag.setMimeData(mime)
-            drag.setHotSpot(event.pos())
-            drag.setPixmap(self.grab())
-            print("🚀 Drag started with:", self.text())
-            drag.exec(Qt.CopyAction)
-        else:
-            super().mouseMoveEvent(event)
-
-
-class DropFrame(QFrame):
-    def __init__(self, border_color):
-        super().__init__()
-        self.setAcceptDrops(True)
-        self.setFixedSize(100, 60)
-        self.setStyleSheet(f"""
-            background-color: transparent;
-            border: 2px solid {border_color};
-            border-radius: 4px;
-        """)
-
-        self.layout = QVBoxLayout(self)
-        self.label = QLabel("Drop tool here")
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("color: white;")
-        self.layout.addWidget(self.label)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasText():
-            print("🚀 drag enter")
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        if event.mimeData().hasText():
-            tool_name = event.mimeData().text()
-            print("✅ dropped:", tool_name)
-            self.label.setText(tool_name)
-            event.acceptProposedAction()
-        else:
-            print("⚠️ dropEvent ignored")
 
 
 class ShapeCard(QWidget):
     def __init__(self, shape_id, shape_type, color_name):
         super().__init__()
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # ключевой момент
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
@@ -68,10 +24,54 @@ class ShapeCard(QWidget):
             border: 2px solid {color_name};
             padding: 2px;
         """)
+        label.setFocusPolicy(Qt.NoFocus)
         layout.addWidget(label)
 
-        self.frame = DropFrame(color_name)
-        layout.addWidget(self.frame)
+        frame = QFrame()
+        frame.setFixedSize(100, 60)
+        frame.setStyleSheet(f"""
+            background-color: transparent;
+            border: 2px solid {color_name};
+            border-radius: 4px;
+        """)
+        layout.addWidget(frame)
+
+
+class SelectableMovableProxy(QGraphicsProxyWidget):
+    def __init__(self):
+        super().__init__()
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setAcceptHoverEvents(True)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self._drag_offset = QPointF()
+        self._dragging = False
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            self.setSelected(True)
+            self._dragging = True
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            new_pos = self.pos() + (event.pos() - self._drag_offset)
+            self.setPos(new_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self.setCursor(Qt.ArrowCursor)
+            self._dragging = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
 
 class AIWindow(QMainWindow):
@@ -90,34 +90,10 @@ class AIWindow(QMainWindow):
 
         self.shape_cards = {}
 
-        tool_buttons = [
-            self.ui.pushButton_13, self.ui.pushButton_14, self.ui.pushButton_15,
-            self.ui.pushButton_16, self.ui.pushButton_17, self.ui.pushButton_18,
-            self.ui.pushButton_19, self.ui.pushButton_20, self.ui.pushButton_21,
-            self.ui.pushButton_22, self.ui.pushButton_23, self.ui.pushButton_24,
-            self.ui.pushButton_25, self.ui.pushButton_26, self.ui.pushButton_27,
-            self.ui.pushButton_28, self.ui.pushButton_29, self.ui.pushButton_30,
-            self.ui.pushButton_40, self.ui.pushButton_41, self.ui.pushButton_42,
-            self.ui.pushButton_43, self.ui.pushButton_44, self.ui.pushButton_45,
-            self.ui.pushButton_46, self.ui.pushButton_47, self.ui.pushButton_48,
-            self.ui.pushButton_49, self.ui.pushButton_50, self.ui.pushButton_51,
-            self.ui.pushButton_52, self.ui.pushButton_53, self.ui.pushButton_54,
-            self.ui.pushButton_55, self.ui.pushButton_56, self.ui.pushButton_57
-        ]
-
-        for i, btn in enumerate(tool_buttons):
-            parent = btn.parent()
-            new_btn = DraggableButton(btn.text(), parent)
-            new_btn.setGeometry(btn.geometry())
-            new_btn.setStyleSheet(btn.styleSheet())
-            btn.hide()
-
     def add_shape_card(self, shape_id, shape_type, color_name):
         shape_widget = ShapeCard(shape_id, shape_type, color_name)
-        proxy = QGraphicsProxyWidget()
+        proxy = SelectableMovableProxy()
         proxy.setWidget(shape_widget)
         proxy.setPos(40 + len(self.shape_cards) * 30, 40 + len(self.shape_cards) * 30)
-        proxy.setFlag(QGraphicsItem.ItemIsMovable, True)
-        proxy.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.scene.addItem(proxy)
         self.shape_cards[shape_id] = proxy
