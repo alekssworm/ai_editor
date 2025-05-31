@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>278</width>
+    <height>432</height>
+   </rect>
+  </property>
+  <property name="sizePolicy">
+   <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+    <horstretch>28</horstretch>
+    <verstretch>0</verstretch>
+   </sizepolicy>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="0">
+    <widget class="QFrame" name="frame_7">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>280</width>
+       <height>16777215</height>
+      </size>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::Shape::StyledPanel</enum>
+     </property>
+     <property name="frameShadow">
+      <enum>QFrame::Shadow::Raised</enum>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_2">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_175">
+        <property name="text">
+         <string>water</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QPushButton" name="pushButton_264">
+        <property name="maximumSize">
+         <size>
+          <width>30</width>
+          <height>30</height>
+         </size>
+        </property>
+        <property name="text">
+         <string>X</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QSplitter" name="splitter_347">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="handleWidth">
+         <number>0</number>
+        </property>
+        <widget class="QPushButton" name="pushButton_265">
+         <property name="text">
+          <string>waterfall</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_266">
+         <property name="text">
+          <string>river</string>
+         </property>
+        </widget>
+        <widget class="QPushButton" name="pushButton_267">
+         <property name="text">
+          <string>Still water</string>
+         </property>
+        </widget>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_176">
+        <property name="text">
+         <string>sub functions</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="2">
+       <widget class="QSplitter" name="splitter_2">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="handleWidth">
+         <number>0</number>
+        </property>
+        <widget class="QSplitter" name="splitter">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="pushButton_268">
+          <property name="text">
+           <string>waves</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_269">
+          <property name="text">
+           <string>ripples</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_270">
+          <property name="text">
+           <string>splashes</string>
+          </property>
+         </widget>
+        </widget>
+        <widget class="QSplitter" name="splitter_351">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="pushButton_271">
+          <property name="text">
+           <string>Bubbles</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_272">
+          <property name="text">
+           <string>reflections</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_273">
+          <property name="text">
+           <string>Sediment</string>
+          </property>
+         </widget>
+        </widget>
+        <widget class="QSplitter" name="splitter_353">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="pushButton_274">
+          <property name="text">
+           <string>foam</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_275">
+          <property name="text">
+           <string>transparency</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_276">
+          <property name="text">
+           <string>viscosity</string>
+          </property>
+         </widget>
+        </widget>
+        <widget class="QSplitter" name="splitter_354">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="pushButton_277">
+          <property name="text">
+           <string>wet edge</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_278">
+          <property name="text">
+           <string>caustics </string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="pushButton_279">
+          <property name="text">
+           <string>distortion</string>
+          </property>
+         </widget>
+        </widget>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="label_177">
+        <property name="text">
+         <string>setings</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignmentFlag::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="2">
+       <widget class="QGroupBox" name="groupBox_18">
+        <property name="maximumSize">
+         <size>
+          <width>280</width>
+          <height>16777215</height>
+         </size>
+        </property>
+        <property name="title">
+         <string/>
+        </property>
+        <layout class="QGridLayout" name="gridLayout_58">
+         <property name="sizeConstraint">
+          <enum>QLayout::SizeConstraint::SetFixedSize</enum>
+         </property>
+         <item row="5" column="0">
+          <widget class="QSplitter" name="splitter_357">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="handleWidth">
+            <number>0</number>
+           </property>
+           <widget class="QLabel" name="label_179">
+            <property name="text">
+             <string>grain             </string>
+            </property>
+           </widget>
+           <widget class="QSpinBox" name="spinBox_123">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>100</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>120</width>
+              <height>16777215</height>
+             </size>
+            </property>
+           </widget>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QSplitter" name="splitter_360">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="handleWidth">
+            <number>0</number>
+           </property>
+           <widget class="QLabel" name="label_182">
+            <property name="text">
+             <string>opacity</string>
+            </property>
+           </widget>
+           <widget class="QSpinBox" name="spinBox_126"/>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QSplitter" name="splitter_356">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="handleWidth">
+            <number>0</number>
+           </property>
+           <widget class="QLabel" name="label_178">
+            <property name="text">
+             <string>intensity </string>
+            </property>
+           </widget>
+           <widget class="QSpinBox" name="spinBox_122"/>
+          </widget>
+         </item>
+         <item row="4" column="0">
+          <widget class="QSplitter" name="splitter_359">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="handleWidth">
+            <number>0</number>
+           </property>
+           <widget class="QLabel" name="label_181">
+            <property name="text">
+             <string>randomness        </string>
+            </property>
+           </widget>
+           <widget class="QSpinBox" name="spinBox_125">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="minimumSize">
+             <size>
+              <width>100</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>120</width>
+              <height>16777215</height>
+             </size>
+            </property>
+           </widget>
+          </widget>
+         </item>
+         <item row="6" column="0">
+          <widget class="QPushButton" name="pushButton_280">
+           <property name="text">
+            <string>color</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QSplitter" name="splitter_358">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="handleWidth">
+            <number>0</number>
+           </property>
+           <widget class="QLabel" name="label_180">
+            <property name="text">
+             <string>power</string>
+            </property>
+           </widget>
+           <widget class="QSpinBox" name="spinBox_124"/>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

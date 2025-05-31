@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         self.ui.frame_4.hide()
 
         # Регистрация фигур
-        self.shape_registry = {}  # {id: QGraphicsItem}
+        self.shape_registry = {}  # {id: Q GraphicsItem}
         self.shape_id_counter = 1
 
         # Кнопки UI
