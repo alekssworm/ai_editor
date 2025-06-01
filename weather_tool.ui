@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>Form</class>
- <widget class="QWidget" name="Form">
+ <class>weather_tool</class>
+ <widget class="QWidget" name="weather_tool">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -62,22 +62,22 @@
          <property name="handleWidth">
           <number>0</number>
          </property>
-         <widget class="QPushButton" name="pushButton_253">
+         <widget class="QPushButton" name="main_Fog">
           <property name="text">
            <string>Fog</string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_254">
+         <widget class="QPushButton" name="main_Wind">
           <property name="text">
            <string>Wind </string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_255">
+         <widget class="QPushButton" name="main_Smoke">
           <property name="text">
            <string>Smoke </string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_256">
+         <widget class="QPushButton" name="main_Vapour">
           <property name="text">
            <string>Vapour </string>
           </property>
@@ -100,12 +100,12 @@
          <property name="handleWidth">
           <number>0</number>
          </property>
-         <widget class="QPushButton" name="pushButton_257">
+         <widget class="QPushButton" name="sub_swirls">
           <property name="text">
            <string>swirls</string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_258">
+         <widget class="QPushButton" name="sub_drift">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
             <horstretch>0</horstretch>
@@ -124,12 +124,12 @@
          <property name="handleWidth">
           <number>0</number>
          </property>
-         <widget class="QPushButton" name="pushButton_259">
+         <widget class="QPushButton" name="sub_gusts">
           <property name="text">
            <string>gusts</string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_260">
+         <widget class="QPushButton" name="sub_density_pulse">
           <property name="text">
            <string>density pulse</string>
           </property>
@@ -152,7 +152,7 @@
          <property name="handleWidth">
           <number>0</number>
          </property>
-         <widget class="QPushButton" name="pushButton_261">
+         <widget class="QPushButton" name="sub_fade_fluctuations">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
             <horstretch>0</horstretch>
@@ -163,7 +163,7 @@
            <string>fade fluctuations</string>
           </property>
          </widget>
-         <widget class="QPushButton" name="pushButton_262">
+         <widget class="QPushButton" name="sub_heat_lift">
           <property name="text">
            <string>heat lift</string>
           </property>
@@ -229,25 +229,22 @@
               <string>particle size</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_111">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_13">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -264,25 +261,22 @@
               <string>pulse rate</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_117">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_11">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -299,13 +293,22 @@
               <string>lift</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_116">
-             <property name="maximumSize">
-              <size>
-               <width>100</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_9">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -322,7 +325,23 @@
               <string>drift speed</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_121"/>
+            <widget class="QComboBox" name="comboBox_6">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
+            </widget>
            </widget>
           </item>
           <item row="2" column="0">
@@ -338,7 +357,23 @@
               <string>intensity </string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_120"/>
+            <widget class="QComboBox" name="comboBox_10">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
+            </widget>
            </widget>
           </item>
           <item row="4" column="0">
@@ -354,25 +389,22 @@
               <string>density</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_113">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_8">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -389,25 +421,22 @@
               <string>randomness</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_114">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_7">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -431,25 +460,22 @@
               <string>glow pulse</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_112">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_12">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>
@@ -466,25 +492,22 @@
               <string>blur</string>
              </property>
             </widget>
-            <widget class="QSpinBox" name="spinBox_118">
-             <property name="sizePolicy">
-              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-               <horstretch>0</horstretch>
-               <verstretch>0</verstretch>
-              </sizepolicy>
-             </property>
-             <property name="minimumSize">
-              <size>
-               <width>100</width>
-               <height>0</height>
-              </size>
-             </property>
-             <property name="maximumSize">
-              <size>
-               <width>120</width>
-               <height>16777215</height>
-              </size>
-             </property>
+            <widget class="QComboBox" name="comboBox_5">
+             <item>
+              <property name="text">
+               <string>weak</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>strong</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>normal</string>
+              </property>
+             </item>
             </widget>
            </widget>
           </item>

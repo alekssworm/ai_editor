@@ -2,14 +2,14 @@ from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsProxyWidget,
     QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton
 )
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtGui import QPainter
 from PySide6.QtCore import Qt, QPointF
 
-from ui_ai_window import Ui_MainWindow as UiAIWindow
-from ui_weather_tool import Ui_Form as UiWeatherTool
-from ui_water_tool import Ui_Form as UiWaterTool
-from ui_light_tool import Ui_Form as UiLightTool
-from ui_fire_tool import Ui_Form as UiFireTool
+from ui_ai_window import Ui_MainWindow
+from ui_weather_tool import Ui_weather_tool
+from ui_water_tool import Ui_water_tool
+from ui_light_tool import Ui_light_tool
+from ui_fire_tool import Ui_fire_tool
 
 
 class ShapeCard(QWidget):
@@ -32,7 +32,6 @@ class ShapeCard(QWidget):
         label.setFocusPolicy(Qt.NoFocus)
         self.main_layout.addWidget(label)
 
-        # 🔁 Рамка-контейнер
         self.frame = QFrame()
         self.frame.setStyleSheet(f"""
             background-color: transparent;
@@ -41,11 +40,13 @@ class ShapeCard(QWidget):
         """)
         self.main_layout.addWidget(self.frame)
 
-        # ⬇ Внутри рамки — вертикальный layout
         self.frame_layout = QVBoxLayout(self.frame)
         self.frame_layout.setContentsMargins(4, 4, 4, 4)
         self.frame_layout.setSpacing(4)
 
+        self.tool_type = None
+        self.main_function_added = False
+        self.added_subfunctions = set()
 
 
 class SelectableMovableProxy(QGraphicsProxyWidget):
@@ -92,7 +93,7 @@ class SelectableMovableProxy(QGraphicsProxyWidget):
 class AIWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.ui = UiAIWindow()
+        self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
         self.scene = QGraphicsScene(self)
@@ -103,12 +104,13 @@ class AIWindow(QMainWindow):
         self.ui.graphicsView.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.ui.graphicsView.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        self.ui.weather_tool.clicked.connect(lambda: self.add_tool_panel(UiWeatherTool))
-        self.ui.water_button.clicked.connect(lambda: self.add_tool_panel(UiWaterTool))
-        self.ui.light_button.clicked.connect(lambda: self.add_tool_panel(UiLightTool))
-        self.ui.fire_button.clicked.connect(lambda: self.add_tool_panel(UiFireTool))
+        self.ui.weather_tool.clicked.connect(lambda: self.load_tool_panel(Ui_weather_tool))
+        self.ui.water_button.clicked.connect(lambda: self.load_tool_panel(Ui_water_tool))
+        self.ui.light_button.clicked.connect(lambda: self.load_tool_panel(Ui_light_tool))
+        self.ui.fire_button.clicked.connect(lambda: self.load_tool_panel(Ui_fire_tool))
 
         self.shape_cards = {}
+        self.last_tool_type = None
 
         self.tool_container_layout = QVBoxLayout(self.ui.scrollAreaWidgetContents)
         self.tool_container_layout.setSpacing(6)
@@ -123,8 +125,31 @@ class AIWindow(QMainWindow):
         self.shape_cards[shape_id] = proxy
         print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
 
-    def add_button_name_to_shape_card(self, button_text):
-        print(f"[DEBUG] Нажата кнопка: {button_text}")
+    def load_tool_panel(self, ui_class):
+        self.last_tool_type = ui_class.__name__
+        print(f"[DEBUG] 🔄 Активирован инструмент: {self.last_tool_type}")
+
+        tool_widget = QWidget()
+        ui = ui_class()
+        ui.setupUi(tool_widget)
+
+        buttons = tool_widget.findChildren(QPushButton)
+        print(f"[DEBUG] Найдено {len(buttons)} кнопок в {ui_class.__name__}")
+
+        for btn in buttons:
+            btn_text = btn.text().strip()
+            btn_name = btn.objectName().strip()
+            if btn_text and btn_name.lower() not in ["x", "color"]:
+                btn.clicked.connect(lambda _, text=btn_text, name=btn_name: self.add_button_name_to_shape_card(text, name))
+                print(f"[DEBUG] Привязан обработчик к кнопке: {btn_text} ({btn_name})")
+
+        tool_widget._tool_class = ui_class
+        size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        tool_widget.setSizePolicy(size_policy)
+        self.tool_container_layout.addWidget(tool_widget)
+
+    def add_button_name_to_shape_card(self, button_text, button_name):
+        print(f"[DEBUG] Нажата кнопка: {button_text} ({button_name})")
         try:
             selected_id = int(self.ui.label_14.text().strip())
             print(f"[DEBUG] ShapeCard ID из label_14: {selected_id}")
@@ -138,32 +163,34 @@ class AIWindow(QMainWindow):
 
         shape_card = self.shape_cards[selected_id].widget()
 
+        tool_type = self.last_tool_type.lower().replace('ui_', '').replace('_tool', '')
+        is_main = button_name.lower().startswith('main_')
+        is_sub = button_name.lower().startswith('sub_')
+
+        if shape_card.tool_type and shape_card.tool_type != tool_type:
+            print(f"[DEBUG] ❌ Нельзя смешивать инструменты: {shape_card.tool_type} != {tool_type}")
+            return
+
+        if not shape_card.tool_type:
+            shape_card.tool_type = tool_type
+            print(f"[DEBUG] ✅ Назначен tool_type: {tool_type}")
+
+        if is_main:
+            if shape_card.main_function_added:
+                print(f"[DEBUG] ⚠ Главная функция уже добавлена в ShapeCard {selected_id}")
+                return
+            shape_card.main_function_added = True
+            print(f"[DEBUG] ✅ Добавлена главная функция: {button_text}")
+        elif is_sub:
+            if button_name in shape_card.added_subfunctions:
+                print(f"[DEBUG] ⚠ Саб-функция уже добавлена: {button_text} ({button_name})")
+                return
+            shape_card.added_subfunctions.add(button_name)
+            print(f"[DEBUG] ➕ Добавлена саб-функция: {button_text}")
+        else:
+            print(f"[DEBUG] ❗ Неизвестный тип кнопки: {button_text} ({button_name})")
+            return
+
         label = QLabel(button_text)
-        label.setStyleSheet("color: white; background: rgba(255, 255, 255, 0.1); padding: 2px 4px; border-radius: 4px;")
+        label.setStyleSheet("color: white; background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 4px;")
         shape_card.frame_layout.addWidget(label)
-        print(f"[DEBUG] Добавлен элемент '{button_text}' в ShapeCard ID {selected_id}")
-
-    def add_tool_panel(self, ui_class):
-        tool_widget = QWidget()
-        ui = ui_class()
-        ui.setupUi(tool_widget)
-
-        buttons = tool_widget.findChildren(QPushButton)
-        print(f"[DEBUG] Найдено {len(buttons)} кнопок в {ui_class.__name__}")
-
-        for btn in buttons:
-            btn_text = btn.text().strip()
-            if btn_text and btn_text.lower() not in ["x", "color"]:
-                btn.clicked.connect(lambda _, text=btn_text: self.add_button_name_to_shape_card(text))
-                print(f"[DEBUG] Привязан обработчик к кнопке: {btn_text}")
-
-        # Удалить старую панель
-        for i in reversed(range(self.tool_container_layout.count())):
-            widget = self.tool_container_layout.itemAt(i).widget()
-            if widget and hasattr(widget, "_tool_class") and widget._tool_class == ui_class:
-                widget.setParent(None)
-
-        tool_widget._tool_class = ui_class
-        size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        tool_widget.setSizePolicy(size_policy)
-        self.tool_container_layout.addWidget(tool_widget)
