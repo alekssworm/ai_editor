@@ -2,7 +2,7 @@ import sys
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QGraphicsScene, QGraphicsPixmapItem
+    QApplication, QMainWindow, QGraphicsScene,
 )
 from ui_editor import Ui_MainWindow
 
@@ -21,13 +21,12 @@ from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
 
-from obj_list_logic import add_shape_to_list , on_list_item_selected
+from obj_list_logic import   on_list_item_selected
 
 from hide_unhide import toggle_all_fill
 
 from context_menu import on_key_press
 
-from obj_list_logic import remove_shape_from_list
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
 from ai_panel_logic import AIWindow
@@ -60,7 +59,7 @@ class MainWindow(QMainWindow):
         self.ui.frame_4.hide()
 
         # Регистрация фигур
-        self.shape_registry = {}  # {id: Q GraphicsItem}
+        self.shape_registry = {}  # {id: QGraphicsItem}
         self.shape_id_counter = 1
 
         # Кнопки UI

@@ -1,7 +1,9 @@
 from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsProxyWidget,
-    QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton
+    QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton,
+    QComboBox, QHBoxLayout, QApplication
 )
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtGui import QPainter
 from PySide6.QtCore import Qt, QPointF
 
@@ -11,13 +13,14 @@ from ui_water_tool import Ui_water_tool
 from ui_light_tool import Ui_light_tool
 from ui_fire_tool import Ui_fire_tool
 
+from tool_Params import TOOL_PARAMETERS
 
 class ShapeCard(QWidget):
     def __init__(self, shape_id, shape_type, color_name):
         super().__init__()
         self.shape_id = shape_id
         self.setFocusPolicy(Qt.NoFocus)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(4, 4, 4, 4)
@@ -58,17 +61,47 @@ class SelectableMovableProxy(QGraphicsProxyWidget):
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemClipsChildrenToShape, False)
+        self.setWindowFlags(Qt.WindowType.Widget)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._drag_offset = QPointF()
         self._dragging = False
 
     def mousePressEvent(self, event):
+        widget = self.widget()
+        if widget:
+            # Преобразуем в экранные координаты
+            global_pos = self.mapToScene(event.pos()).toPoint()
+            view = self.scene().views()[0]
+            view_pos = view.mapFromScene(global_pos)
+            global_point = view.viewport().mapToGlobal(view_pos)
+
+            # Теперь переводим в координаты widget
+            local_point = widget.mapFromGlobal(global_point)
+            child = widget.childAt(local_point)
+
+            print("======= CLICK DEBUG =======")
+            print(f"event.pos(): {event.pos()}")
+            print(f"scene_pos: {global_pos}")
+            print(f"view_pos: {view_pos}")
+            print(f"global_point: {global_point}")
+            print(f"local_point (in widget): {local_point}")
+            print(f"child: {child} — {type(child) if child else 'None'}")
+            print("===========================")
+
+            if isinstance(child, QComboBox):
+                print("[DEBUG] 👉 Это ComboBox — showPopup()")
+                child.setFocus(Qt.MouseFocusReason)
+                child.showPopup()
+                return
+
         if event.button() == Qt.LeftButton:
             self._drag_offset = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
             self.setSelected(True)
             self._dragging = True
             self.parent_window.ui.label_14.setText(str(self.shape_id))
-            print(f"[DEBUG] ShapeCard selected: ID = {self.shape_id}")
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -191,6 +224,35 @@ class AIWindow(QMainWindow):
             print(f"[DEBUG] ❗ Неизвестный тип кнопки: {button_text} ({button_name})")
             return
 
+        # Добавление параметров
+        param_block = QVBoxLayout()
         label = QLabel(button_text)
-        label.setStyleSheet("color: white; background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 4px;")
-        shape_card.frame_layout.addWidget(label)
+        label.setStyleSheet("color: white; font-weight: bold;")
+        param_block.addWidget(label)
+
+        params = TOOL_PARAMETERS.get(button_name, [])
+        for param in params:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            label = QLabel(param)
+            combo = QComboBox()
+            combo.addItems(["none", "default", "weak", "normal", "strong"])
+            combo.setCurrentText("default")
+            combo.setFocusPolicy(Qt.StrongFocus)
+            combo.setFocus()
+            combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 2px;")
+
+            label.setStyleSheet("color: lightgray")
+
+
+            row.addWidget(label)
+            row.addWidget(combo)
+
+            param_block.addLayout(row)
+
+        wrapper = QWidget()
+        wrapper.setLayout(param_block)
+        wrapper.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 4px;")
+
+        shape_card.frame_layout.addWidget(wrapper)
+
