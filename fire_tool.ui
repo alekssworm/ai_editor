@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>280</width>
-    <height>594</height>
+    <height>192</height>
    </rect>
   </property>
   <property name="maximumSize">
@@ -38,14 +38,84 @@
       <enum>QFrame::Shadow::Raised</enum>
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
-      <item row="6" column="0">
-       <widget class="QLabel" name="label_185">
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_184">
+        <property name="maximumSize">
+         <size>
+          <width>280</width>
+          <height>16777215</height>
+         </size>
+        </property>
         <property name="text">
-         <string>setings</string>
+         <string>sub functions</string>
         </property>
         <property name="alignment">
          <set>Qt::AlignmentFlag::AlignCenter</set>
         </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QSplitter" name="splitter_3">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="handleWidth">
+         <number>0</number>
+        </property>
+        <widget class="QSplitter" name="splitter_368">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="sub_sparks">
+          <property name="text">
+           <string>sparks</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="sub_smoke">
+          <property name="text">
+           <string>smoke</string>
+          </property>
+         </widget>
+        </widget>
+        <widget class="QSplitter" name="splitter_369">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="sub_heat_distortion">
+          <property name="text">
+           <string>heat distortion</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="sub_pulse">
+          <property name="text">
+           <string>pulse</string>
+          </property>
+         </widget>
+        </widget>
+        <widget class="QSplitter" name="splitter_371">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="handleWidth">
+          <number>0</number>
+         </property>
+         <widget class="QPushButton" name="sub_shadow_flicker">
+          <property name="text">
+           <string>shadow flicker</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="sub_light_glow">
+          <property name="text">
+           <string>light glow</string>
+          </property>
+         </widget>
+        </widget>
        </widget>
       </item>
       <item row="2" column="0">
@@ -117,448 +187,6 @@
           <string>X</string>
          </property>
         </widget>
-       </widget>
-      </item>
-      <item row="7" column="0">
-       <widget class="QGroupBox" name="groupBox_19">
-        <property name="title">
-         <string/>
-        </property>
-        <layout class="QGridLayout" name="gridLayout">
-         <item row="0" column="0">
-          <widget class="QSplitter" name="splitter_383">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_195">
-            <property name="text">
-             <string>flame size</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_6">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="1" column="0">
-          <widget class="QSplitter" name="splitter_376">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_188">
-            <property name="text">
-             <string>intensity </string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_12">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="2" column="0">
-          <widget class="QSplitter" name="splitter_375">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_187">
-            <property name="text">
-             <string>flicker speed</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_11">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="3" column="0">
-          <widget class="QSplitter" name="splitter_374">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_186">
-            <property name="text">
-             <string>randomness        </string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_10">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="4" column="0">
-          <widget class="QSplitter" name="splitter_384">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_196">
-            <property name="text">
-             <string>grain             </string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_9">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="5" column="0">
-          <widget class="QSplitter" name="splitter_381">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_193">
-            <property name="text">
-             <string>opacity</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_8">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="6" column="0">
-          <widget class="QSplitter" name="splitter_377">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_189">
-            <property name="text">
-             <string>spark count</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_7">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="7" column="0">
-          <widget class="QSplitter" name="splitter_378">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_190">
-            <property name="text">
-             <string>distortion strength</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_5">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="8" column="0">
-          <widget class="QSplitter" name="splitter_379">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_191">
-            <property name="text">
-             <string>glow pulse</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_13">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="9" column="0">
-          <widget class="QSplitter" name="splitter_380">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_192">
-            <property name="text">
-             <string>light radius</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_14">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="10" column="0">
-          <widget class="QSplitter" name="splitter_382">
-           <property name="orientation">
-            <enum>Qt::Orientation::Horizontal</enum>
-           </property>
-           <property name="handleWidth">
-            <number>0</number>
-           </property>
-           <widget class="QLabel" name="label_194">
-            <property name="text">
-             <string>smoke length</string>
-            </property>
-           </widget>
-           <widget class="QComboBox" name="comboBox_15">
-            <item>
-             <property name="text">
-              <string>weak</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>strong</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>normal</string>
-             </property>
-            </item>
-           </widget>
-          </widget>
-         </item>
-         <item row="11" column="0">
-          <widget class="QPushButton" name="pushButton_292">
-           <property name="text">
-            <string>color</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item row="5" column="0">
-       <widget class="QSplitter" name="splitter_3">
-        <property name="orientation">
-         <enum>Qt::Orientation::Vertical</enum>
-        </property>
-        <property name="handleWidth">
-         <number>0</number>
-        </property>
-        <widget class="QSplitter" name="splitter_368">
-         <property name="orientation">
-          <enum>Qt::Orientation::Horizontal</enum>
-         </property>
-         <property name="handleWidth">
-          <number>0</number>
-         </property>
-         <widget class="QPushButton" name="sub_sparks">
-          <property name="text">
-           <string>sparks</string>
-          </property>
-         </widget>
-         <widget class="QPushButton" name="sub_smoke">
-          <property name="text">
-           <string>smoke</string>
-          </property>
-         </widget>
-        </widget>
-        <widget class="QSplitter" name="splitter_369">
-         <property name="orientation">
-          <enum>Qt::Orientation::Horizontal</enum>
-         </property>
-         <property name="handleWidth">
-          <number>0</number>
-         </property>
-         <widget class="QPushButton" name="sub_heat_distortion">
-          <property name="text">
-           <string>heat distortion</string>
-          </property>
-         </widget>
-         <widget class="QPushButton" name="sub_pulse">
-          <property name="text">
-           <string>pulse</string>
-          </property>
-         </widget>
-        </widget>
-        <widget class="QSplitter" name="splitter_371">
-         <property name="orientation">
-          <enum>Qt::Orientation::Horizontal</enum>
-         </property>
-         <property name="handleWidth">
-          <number>0</number>
-         </property>
-         <widget class="QPushButton" name="sub_shadow_flicker">
-          <property name="text">
-           <string>shadow flicker</string>
-          </property>
-         </widget>
-         <widget class="QPushButton" name="sub_light_glow">
-          <property name="text">
-           <string>light glow</string>
-          </property>
-         </widget>
-        </widget>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_184">
-        <property name="text">
-         <string>sub functions</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignmentFlag::AlignCenter</set>
-        </property>
        </widget>
       </item>
      </layout>
