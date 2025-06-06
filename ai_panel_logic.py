@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtGui import QPainter
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QStringListModel
 
 from ui_ai_window import Ui_MainWindow
 from ui_weather_tool import Ui_weather_tool
@@ -14,6 +14,51 @@ from ui_light_tool import Ui_light_tool
 from ui_fire_tool import Ui_fire_tool
 
 from tool_Params import TOOL_PARAMETERS
+
+from PySide6.QtWidgets import QComboBox, QListView
+
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
+
+class InSceneComboBox(QWidget):
+    def __init__(self, options=None, parent=None):
+        super().__init__(parent)
+        self.options = options or ["default", "low", "normal", "high"]
+        self.button = QPushButton("select")
+        self.view = QListView()
+        self.view.setWindowFlags(Qt.Popup)
+        self.view.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.view.setSelectionMode(QAbstractItemView.SingleSelection)
+
+        self.model = QStringListModel(self.options)
+        self.view.setModel(self.model)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.button)
+
+        self.button.clicked.connect(self.show_popup)
+        self.view.clicked.connect(self.select_option)
+
+    def show_popup(self):
+        self.view.setMinimumWidth(self.width())
+        self.view.move(self.mapToGlobal(self.button.rect().bottomLeft()))
+        self.view.show()
+
+    def select_option(self, index):
+        value = self.model.data(index)
+        self.button.setText(value)
+        self.view.hide()
+
+    def setCurrentText(self, text):
+        if text in self.options:
+            self.button.setText(text)
+
+    def addItems(self, items):
+        self.options = items
+        self.model.setStringList(items)
+
+
 
 class ShapeCard(QWidget):
     def __init__(self, shape_id, shape_type, color_name):
@@ -52,75 +97,32 @@ class ShapeCard(QWidget):
         self.added_subfunctions = set()
 
 
-class SelectableMovableProxy(QGraphicsProxyWidget):
-    def __init__(self, shape_id, parent_window):
+from PySide6.QtWidgets import QGraphicsWidget, QGraphicsLinearLayout, QGraphicsProxyWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QGraphicsItem
+
+class ShapeCardGraphicsWidget(QGraphicsWidget):
+    def __init__(self, shape_id, shape_widget, parent_window):
         super().__init__()
         self.shape_id = shape_id
         self.parent_window = parent_window
+
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptedMouseButtons(Qt.LeftButton)
-        self.setAcceptHoverEvents(True)
-        self.setFlag(QGraphicsItem.ItemIsMovable, True)
-        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
-        self.setFlag(QGraphicsProxyWidget.GraphicsItemFlag.ItemClipsChildrenToShape, False)
-        self.setWindowFlags(Qt.WindowType.Widget)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        self._drag_offset = QPointF()
-        self._dragging = False
+
+        layout = QGraphicsLinearLayout(Qt.Vertical)
+        proxy = QGraphicsProxyWidget(self)
+        proxy.setWidget(shape_widget)
+        layout.addItem(proxy)
+
+        self.setLayout(layout)
 
     def mousePressEvent(self, event):
-        widget = self.widget()
-        if widget:
-            # Преобразуем в экранные координаты
-            global_pos = self.mapToScene(event.pos()).toPoint()
-            view = self.scene().views()[0]
-            view_pos = view.mapFromScene(global_pos)
-            global_point = view.viewport().mapToGlobal(view_pos)
-
-            # Теперь переводим в координаты widget
-            local_point = widget.mapFromGlobal(global_point)
-            child = widget.childAt(local_point)
-
-            print("======= CLICK DEBUG =======")
-            print(f"event.pos(): {event.pos()}")
-            print(f"scene_pos: {global_pos}")
-            print(f"view_pos: {view_pos}")
-            print(f"global_point: {global_point}")
-            print(f"local_point (in widget): {local_point}")
-            print(f"child: {child} — {type(child) if child else 'None'}")
-            print("===========================")
-
-            if isinstance(child, QComboBox):
-                print("[DEBUG] 👉 Это ComboBox — showPopup()")
-                child.setFocus(Qt.MouseFocusReason)
-                child.showPopup()
-                return
-
-        if event.button() == Qt.LeftButton:
-            self._drag_offset = event.pos()
-            self.setCursor(Qt.ClosedHandCursor)
-            self.setSelected(True)
-            self._dragging = True
+        self.setSelected(True)
+        if self.parent_window and hasattr(self.parent_window.ui, "label_14"):
             self.parent_window.ui.label_14.setText(str(self.shape_id))
-            event.accept()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._dragging:
-            new_pos = self.pos() + (event.pos() - self._drag_offset)
-            self.setPos(new_pos)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._dragging:
-            self.setCursor(Qt.ArrowCursor)
-            self._dragging = False
-            event.accept()
-        else:
-            super().mouseReleaseEvent(event)
+        super().mousePressEvent(event)
 
 
 class AIWindow(QMainWindow):
@@ -151,11 +153,11 @@ class AIWindow(QMainWindow):
 
     def add_shape_card(self, shape_id, shape_type, color_name):
         shape_widget = ShapeCard(shape_id, shape_type, color_name)
-        proxy = SelectableMovableProxy(shape_id, self)
-        proxy.setWidget(shape_widget)
-        proxy.setPos(40 + len(self.shape_cards) * 30, 40 + len(self.shape_cards) * 30)
-        self.scene.addItem(proxy)
-        self.shape_cards[shape_id] = proxy
+        widget = ShapeCardGraphicsWidget(shape_id, shape_widget, self)
+        widget.setPos(40 + len(self.shape_cards) * 30, 40 + len(self.shape_cards) * 30)
+        self.scene.addItem(widget)
+        self.shape_cards[shape_id] = widget
+
         print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
 
     def load_tool_panel(self, ui_class):
@@ -194,7 +196,12 @@ class AIWindow(QMainWindow):
             print(f"[DEBUG] ShapeCard с ID {selected_id} не найден")
             return
 
-        shape_card = self.shape_cards[selected_id].widget()
+        proxy = self.shape_cards[selected_id].layout().itemAt(0)
+        shape_card = proxy.widget() if proxy else None
+
+        if not shape_card:
+            print(f"[DEBUG] ❌ Не удалось получить ShapeCard для ID {selected_id}")
+            return
 
         tool_type = self.last_tool_type.lower().replace('ui_', '').replace('_tool', '')
         is_main = button_name.lower().startswith('main_')
@@ -235,7 +242,7 @@ class AIWindow(QMainWindow):
             row = QHBoxLayout()
             row.setSpacing(6)
             label = QLabel(param)
-            combo = QComboBox()
+            combo = InSceneComboBox()
             combo.addItems(["none", "default", "weak", "normal", "strong"])
             combo.setCurrentText("default")
             combo.setFocusPolicy(Qt.StrongFocus)
