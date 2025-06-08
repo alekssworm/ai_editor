@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsProxyWidget,
     QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton,
-    QComboBox, QHBoxLayout, QApplication
+    QComboBox, QHBoxLayout, QApplication, QFormLayout
 )
 from PySide6.QtGui import QMouseEvent, QFont, QFontMetrics
 from PySide6.QtGui import QPainter
@@ -328,4 +328,51 @@ class AIWindow(QMainWindow):
         wrapper.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 4px;")
 
         shape_card.frame_layout.addWidget(wrapper)
+
+    def collect_shape_cards_data(self):
+        shape_cards_data = []
+
+        for shape_id, graphics_widget in self.shape_cards.items():
+            proxy = graphics_widget.layout().itemAt(0)
+            shape_card = proxy.widget() if proxy else None
+            if not shape_card:
+                continue
+
+            shape_info = {
+                "id": shape_id,
+                "tool_type": shape_card.tool_type,
+                "main": None,
+                "sub": [],
+            }
+
+            for i in range(shape_card.frame_layout.count()):
+                block = shape_card.frame_layout.itemAt(i).widget()
+                if not block:
+                    continue
+
+                layout = block.layout()
+                if layout is None or layout.count() == 0:
+                    continue
+
+                function_label = layout.itemAt(0).widget().text()  # название main/sub
+                form_layout = layout.itemAt(1)
+                if not isinstance(form_layout, QFormLayout):
+                    continue
+
+                params = {}
+                for row in range(form_layout.rowCount()):
+                    label = form_layout.itemAt(row, QFormLayout.LabelRole).widget()
+                    combo = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
+                    if label and combo and hasattr(combo, "selected"):
+                        params[label.text()] = combo.selected
+
+                if "main_" in function_label.lower():
+                    shape_info["main"] = {"name": function_label, "params": params}
+                else:
+                    shape_info["sub"].append({"name": function_label, "params": params})
+
+            shape_cards_data.append(shape_info)
+
+        return shape_cards_data
+
 

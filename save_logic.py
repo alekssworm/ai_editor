@@ -275,9 +275,14 @@ def save_outputs(self):
     without_shape_image.save(os.path.join(folder, "without_shape_area.png"))
 
     with open(os.path.join(folder, "shapes.json"), "w", encoding="utf-8") as f:
+        if hasattr(self, "ai_window"):
+            shape_cards_data = self.ai_window.collect_shape_cards_data()
+        else:
+            shape_cards_data = []
         json.dump({
             "background": original_image_path,
-            "shapes": shape_data
+            "shapes": shape_data,
+            "shape_cards": shape_cards_data
         }, f, indent=4)
 
     print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
