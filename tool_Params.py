@@ -18,7 +18,7 @@ TOOL_PARAMETERS = {
     "main_lightning": ["bolt width", "light radius", "branch count", "frequency", "opacity", "duration"],
 
     "sub_pulse": ["pulse speed", "glow depth"],
-    "sub_flicker": ["flicker frequency", "intensity"],
+    "sub_flicker": ["frequency", "intensity"],
     "sub_glow_spread": ["glow depth", "radius"],
     "sub_trail": ["duration", "opacity"],
     "sub_spark": ["count", "intensity"],

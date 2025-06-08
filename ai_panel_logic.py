@@ -24,8 +24,32 @@ class InSceneComboBox(QWidget):
     def __init__(self, options=None, parent=None):
         super().__init__(parent)
         self.options = options or ["default", "low", "normal", "high"]
-        self.button = QPushButton("select")
+        self.selected = self.options[0]
+
+        self.button = QPushButton(self.selected)
+        self.button.setStyleSheet("""
+            QPushButton {
+                background-color: #2a2a2a;
+                color: white;
+                border: 1px solid #555;
+                padding: 2px 6px;
+                text-align: left;
+            }
+            QPushButton::menu-indicator {
+                image: none;
+            }
+        """)
+
         self.view = QListView()
+        self.view.setStyleSheet("""
+            QListView {
+                background-color: #2a2a2a;
+                color: white;
+                border: 1px solid #555;
+                selection-background-color: #444;
+                padding: 2px;
+            }
+        """)
         self.view.setWindowFlags(Qt.Popup)
         self.view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.view.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -41,22 +65,51 @@ class InSceneComboBox(QWidget):
         self.view.clicked.connect(self.select_option)
 
     def show_popup(self):
-        self.view.setMinimumWidth(self.width())
+        popup_width = max(self.width(), 100)
+        self.view.setFixedWidth(popup_width)
+
+        # Убираем скролл
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # Подсветка каждой строки (граница снизу)
+        self.view.setStyleSheet("""
+            QListView {
+                background-color: #2a2a2a;
+                color: white;
+                border: 1px solid #555;
+                selection-background-color: #444;
+                padding: 2px;
+            }
+            QListView::item {
+                border-bottom: 1px solid #444;
+                padding: 4px;
+            }
+        """)
+
+        row_height = self.view.sizeHintForRow(0) or 20
+        max_visible = min(len(self.options), 5)
+        total_height = max_visible * row_height + 4
+        self.view.setFixedHeight(total_height)
+
         self.view.move(self.mapToGlobal(self.button.rect().bottomLeft()))
         self.view.show()
 
     def select_option(self, index):
         value = self.model.data(index)
+        self.selected = value
         self.button.setText(value)
         self.view.hide()
 
     def setCurrentText(self, text):
         if text in self.options:
+            self.selected = text
             self.button.setText(text)
 
     def addItems(self, items):
         self.options = items
         self.model.setStringList(items)
+        self.setCurrentText(items[0] if items else "select")
+
 
 
 
@@ -238,10 +291,16 @@ class AIWindow(QMainWindow):
         param_block.addWidget(label)
 
         params = TOOL_PARAMETERS.get(button_name, [])
+        from PySide6.QtWidgets import QFormLayout  # обязательно добавить в импорты
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(6)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+
         for param in params:
-            row = QHBoxLayout()
-            row.setSpacing(6)
             label = QLabel(param)
+            label.setStyleSheet("color: lightgray; font-size: 12px; min-width: 80px;")
+
             combo = InSceneComboBox()
             combo.addItems(["none", "default", "weak", "normal", "strong"])
             combo.setCurrentText("default")
@@ -249,13 +308,9 @@ class AIWindow(QMainWindow):
             combo.setFocus()
             combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 2px;")
 
-            label.setStyleSheet("color: lightgray")
+            form_layout.addRow(label, combo)
 
-
-            row.addWidget(label)
-            row.addWidget(combo)
-
-            param_block.addLayout(row)
+        param_block.addLayout(form_layout)
 
         wrapper = QWidget()
         wrapper.setLayout(param_block)

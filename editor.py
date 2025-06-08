@@ -33,10 +33,6 @@ from ai_panel_logic import AIWindow
 from m_event import MouseMoveFilter
 
 
-
-
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
