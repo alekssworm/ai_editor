@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton,
     QComboBox, QHBoxLayout, QApplication
 )
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QFont, QFontMetrics
 from PySide6.QtGui import QPainter
 from PySide6.QtCore import Qt, QPointF, QStringListModel
 
@@ -297,9 +297,20 @@ class AIWindow(QMainWindow):
         form_layout.setSpacing(6)
         form_layout.setContentsMargins(0, 0, 0, 0)
 
+        font = QFont()
+        font.setPointSize(12)
+        metrics = QFontMetrics(font)
+        max_width = max(metrics.horizontalAdvance(p) for p in params) + 10
+
         for param in params:
             label = QLabel(param)
-            label.setStyleSheet("color: lightgray; font-size: 12px; min-width: 80px;")
+            label.setWordWrap(False)
+            label.setStyleSheet(f"""
+                color: lightgray;
+                font-size: 12px;
+                min-width: {max_width}px;
+                max-width: {max_width}px;
+            """)
 
             combo = InSceneComboBox()
             combo.addItems(["none", "default", "weak", "normal", "strong"])
