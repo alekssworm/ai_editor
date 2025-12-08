@@ -1,24 +1,387 @@
-from PySide6.QtWidgets import (
-    QMainWindow, QGraphicsScene, QGraphicsProxyWidget,
-    QWidget, QGraphicsView, QVBoxLayout, QLabel, QFrame, QGraphicsItem, QSizePolicy, QScrollArea, QPushButton,
-    QComboBox, QHBoxLayout, QApplication, QFormLayout
-)
-from PySide6.QtGui import QMouseEvent, QFont, QFontMetrics
-from PySide6.QtGui import QPainter
-from PySide6.QtCore import Qt, QPointF, QStringListModel
+import json
+import math
+import os
+import traceback
+from typing import Optional, Tuple, Callable
 
-from ui_ai_window import Ui_MainWindow
-from ui_weather_tool import Ui_weather_tool
-from ui_water_tool import Ui_water_tool
-from ui_light_tool import Ui_light_tool
-from ui_fire_tool import Ui_fire_tool
+from PySide6.QtCore import QStringListModel, QThread, QObject, Signal
+from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QPainter
+from PySide6.QtWidgets import (
+    QMainWindow, QGraphicsScene, QGraphicsView, QLabel, QFrame, QSizePolicy, QFormLayout, QFileDialog, QMessageBox
+)
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
 
 from tool_Params import TOOL_PARAMETERS
+from ui_ai_window import Ui_MainWindow
+from ui_fire_tool import Ui_fire_tool
+from ui_light_tool import Ui_light_tool
+from ui_water_tool import Ui_water_tool
+from ui_weather_tool import Ui_weather_tool
 
-from PySide6.QtWidgets import QComboBox, QListView
+
+# ---------------------------
+# Render (SVD img2vid) логика
+# ---------------------------
+# Эта часть не трогает UI-файлы (ui_ai_window.py).
+# Нажатие кнопки "render" запускает генерацию видео в отдельном потоке.
 
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
+def _round_to_multiple(x: int, m: int = 64) -> int:
+    return int(math.ceil(x / m) * m)
+
+
+def _resolve_maybe_relative(path_str: str, base_dir: str) -> str:
+    """Если path_str относительный — резолвим от base_dir."""
+    if not path_str:
+        return path_str
+    if os.path.isabs(path_str) and os.path.exists(path_str):
+        return path_str
+    # пробуем как есть
+    if os.path.exists(path_str):
+        return path_str
+    # пробуем относительно base_dir
+    cand = os.path.join(base_dir, path_str)
+    return cand
+
+
+def _find_first_existing(*candidates: str) -> Optional[str]:
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def _svg_declared_size(svg_path: str) -> Optional[Tuple[float, float]]:
+    """Пытаемся понять, SVG "на весь фон" или локальный. Возвращает (w,h) из viewBox/width/height, если получилось."""
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(svg_path)
+        root = tree.getroot()
+        vb = root.attrib.get("viewBox") or root.attrib.get("viewbox")
+        if vb:
+            parts = vb.replace(",", " ").split()
+            if len(parts) == 4:
+                w = float(parts[2]);
+                h = float(parts[3])
+                if w > 0 and h > 0:
+                    return (w, h)
+
+        # width/height могут быть в px
+        def _to_float(s: str) -> Optional[float]:
+            if not s: return None
+            s = s.strip().lower().replace("px", "")
+            try:
+                return float(s)
+            except:
+                return None
+
+        w = _to_float(root.attrib.get("width", ""))
+        h = _to_float(root.attrib.get("height", ""))
+        if w and h and w > 0 and h > 0:
+            return (w, h)
+    except Exception:
+        return None
+    return None
+
+
+def rasterize_svg_to_mask(svg_path: str, width: int, height: int, feather_px: int = 5):
+    """SVG -> PIL маска (L) размера width x height. Требует PySide6-Addons (QtSvg)."""
+    try:
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtSvg import QSvgRenderer
+    except Exception as e:
+        raise RuntimeError("QtSvg не доступен. Установи: python -m pip install PySide6-Addons") from e
+
+    img = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
+    renderer = QSvgRenderer(svg_path)
+    p = QPainter(img)
+    renderer.render(p)
+    p.end()
+
+    ptr = img.bits()
+    ptr.setsize(img.sizeInBytes())
+    import numpy as np
+    arr = np.frombuffer(ptr, np.uint8).reshape((height, img.bytesPerLine() // 4, 4))
+    arr = arr[:, :width, :]
+    alpha = arr[..., 3]
+    from PIL import Image, ImageFilter
+    mask = Image.fromarray(alpha, mode="L")
+    if feather_px and feather_px > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_px))
+    return mask
+
+
+def _alpha_blend(dst_rgba_np, src_rgb_pil, alpha_mask_L_pil, top_left_xy):
+    """Наложение src_rgb на dst_rgba по маске alpha_mask (L)."""
+    import numpy as np
+    x0, y0 = top_left_xy
+    src = np.array(src_rgb_pil.convert("RGB"), dtype=np.uint8)
+    a = np.array(alpha_mask_L_pil, dtype=np.uint8)  # HxW
+    h, w = a.shape
+    roi = dst_rgba_np[y0:y0 + h, x0:x0 + w, :].astype(np.float32)
+    src_f = src.astype(np.float32)
+    a_f = (a.astype(np.float32) / 255.0)[..., None]
+    roi[..., :3] = src_f * a_f + roi[..., :3] * (1.0 - a_f)
+    roi[..., 3] = 255
+    dst_rgba_np[y0:y0 + h, x0:x0 + w, :] = roi.astype(np.uint8)
+    return dst_rgba_np
+
+
+def _load_svd_pipeline(device: str = "cuda"):
+    """
+    Ленивая загрузка SVD. Требует: torch, diffusers, transformers, accelerate, safetensors.
+    Делает понятную ошибку с командой установки именно в текущий интерпретатор.
+    """
+    import sys, importlib.util
+
+    def _need(pkg: str):
+        return importlib.util.find_spec(pkg) is None
+
+    missing = []
+    for pkg in ("torch", "diffusers", "transformers", "accelerate", "safetensors"):
+        if _need(pkg):
+            missing.append(pkg)
+
+    if missing:
+        # покажем команду, которая точно ставит в тот Python, которым запущено приложение
+        cmd = f'"{sys.executable}" -m pip install -U ' + " ".join(missing)
+        raise RuntimeError(
+            "Не найдены зависимости для SVD: " + ", ".join(missing) + "\n\n"
+                                                                      "Установи их В ЭТОТ интерпретатор (тот, которым запущено приложение):\n"
+                                                                      f"{cmd}\n\n"
+                                                                      "Подсказка: если у тебя есть venv, убедись что приложение запускается из него."
+        )
+
+    # теперь можно импортировать
+    import torch
+    from diffusers import StableVideoDiffusionPipeline
+
+    model_id = "stabilityai/stable-video-diffusion-img2vid-xt"
+    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+
+    pipe = StableVideoDiffusionPipeline.from_pretrained(
+        model_id,
+        torch_dtype=dtype,
+        variant="fp16" if dtype == torch.float16 else None
+    )
+
+    if device.startswith("cuda"):
+        pipe.to(device)
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            pass
+    else:
+        pipe.to("cpu")
+
+    try:
+        pipe.enable_model_cpu_offload()
+    except Exception:
+        pass
+
+    return pipe
+
+
+def _svd_generate_frames(pipe, pil_image_rgb, fps: int, num_frames: int, seed: int,
+                         motion_bucket_id: int = 127, noise_aug_strength: float = 0.02, decode_chunk_size: int = 2):
+    import torch
+    from PIL import Image
+    w, h = pil_image_rgb.size
+    rw, rh = _round_to_multiple(w, 64), _round_to_multiple(h, 64)
+    # чтобы не искажать, паддим до кратности 64
+    if (rw, rh) != (w, h):
+        padded = Image.new("RGB", (rw, rh))
+        padded.paste(pil_image_rgb, (0, 0))
+        inp = padded
+    else:
+        inp = pil_image_rgb
+
+    g = torch.Generator(device=pipe.device if hasattr(pipe, "device") else "cpu")
+    g.manual_seed(seed)
+    out = pipe(
+        inp, fps=fps, num_frames=num_frames, motion_bucket_id=motion_bucket_id,
+        noise_aug_strength=noise_aug_strength, decode_chunk_size=decode_chunk_size, generator=g
+    )
+    frames = out.frames[0]
+    # обратно к исходному размеру
+    if (rw, rh) != (w, h):
+        frames = [f.crop((0, 0, w, h)) for f in frames]
+    return frames
+
+
+def render_svd_from_project(shapes_json_path: str,
+                            out_mp4_path: str,
+                            masks_dir: Optional[str] = None,
+                            pieces_dir: Optional[str] = None,
+                            fps: int = 7,
+                            num_frames: int = 25,
+                            pad: int = 32,
+                            feather_px: int = 5,
+                            progress_cb: Optional[Callable[[int, int, int], None]] = None):
+    """
+    Рендер: для каждого shape берём кусок (shape_<id>.png), анимируем SVD и вклеиваем обратно по SVG-маске.
+    Ожидаем структуру проекта рядом с shapes.json:
+      - masks/shape_<id>.svg (или просто рядом)
+      - shape_<id>.png (или в pieces/)
+      - without_shape_area.png (желательно) как база для склейки
+    """
+    base_dir = os.path.dirname(shapes_json_path)
+    with open(shapes_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    bg_path = _resolve_maybe_relative(data.get("background", ""), base_dir)
+    # если рядом есть "without_shape_area.png" — используем как базу, иначе берём фон
+    base_bg_path = _find_first_existing(
+        os.path.join(base_dir, "without_shape_area.png"),
+        os.path.join(base_dir, "without_shape_area.jpg"),
+        os.path.join(base_dir, "without_shape_area.jpeg"),
+    )
+    from PIL import Image
+    background = Image.open(bg_path).convert("RGB")
+    base_bg = Image.open(base_bg_path).convert("RGB") if base_bg_path else background.copy()
+    W, H = background.size
+
+    shapes = data.get("shapes", [])
+    if not shapes:
+        raise RuntimeError("В shapes.json нет списка shapes")
+
+    if masks_dir is None:
+        masks_dir = _find_first_existing(os.path.join(base_dir, "masks")) or base_dir
+    if pieces_dir is None:
+        pieces_dir = _find_first_existing(os.path.join(base_dir, "pieces")) or base_dir
+
+    import numpy as np
+    base_frames = []
+    base_np = np.array(base_bg, dtype=np.uint8)
+    rgba0 = np.dstack([base_np, np.full((H, W), 255, dtype=np.uint8)])
+    for _ in range(num_frames):
+        base_frames.append(rgba0.copy())
+
+    # устройство
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        device = "cpu"
+
+    pipe = _load_svd_pipeline(device=device)
+
+    total = len(shapes)
+    for i, sh in enumerate(shapes, start=1):
+        sid = int(sh.get("id"))
+        x = int(sh.get("x"));
+        y = int(sh.get("y"))
+        w = int(sh.get("width"));
+        h = int(sh.get("height"))
+
+        # padded bbox
+        x0 = max(0, x - pad);
+        y0 = max(0, y - pad)
+        x1 = min(W, x + w + pad);
+        y1 = min(H, y + h + pad)
+        pw, ph = (x1 - x0), (y1 - y0)
+        offx, offy = (x - x0), (y - y0)
+
+        # входной патч = фон + кусок (если есть)
+        patch_bg = background.crop((x0, y0, x1, y1)).convert("RGB")
+        piece_path = _find_first_existing(
+            os.path.join(pieces_dir, f"shape_{sid}.png"),
+            os.path.join(base_dir, f"shape_{sid}.png"),
+        )
+        if piece_path:
+            piece = Image.open(piece_path).convert("RGBA")
+            if piece.size != (w, h):
+                piece = piece.resize((w, h), Image.LANCZOS)
+            # накладываем кусок на патч фона
+            patch_rgba = patch_bg.convert("RGBA")
+            patch_rgba.paste(piece, (offx, offy), piece)
+            patch_input = patch_rgba.convert("RGB")
+            piece_alpha = piece.split()[-1]
+        else:
+            patch_input = patch_bg
+            piece_alpha = None
+
+        # маска
+        svg_path = _find_first_existing(
+            os.path.join(masks_dir, f"shape_{sid}.svg"),
+            os.path.join(base_dir, f"shape_{sid}.svg"),
+        )
+        if not svg_path and piece_alpha is None:
+            raise RuntimeError(f"Не нашёл ни SVG маску, ни PNG с альфой для shape_{sid}")
+
+        if svg_path:
+            declared = _svg_declared_size(svg_path)
+            full_svg = False
+            if declared:
+                # если SVG примерно размера фона — считаем full-size
+                if abs(declared[0] - W) < W * 0.05 and abs(declared[1] - H) < H * 0.05:
+                    full_svg = True
+            if full_svg:
+                mask_full = rasterize_svg_to_mask(svg_path, W, H, feather_px=feather_px)
+                mask_patch = mask_full.crop((x0, y0, x1, y1))
+            else:
+                # локальная маска под bbox
+                local = rasterize_svg_to_mask(svg_path, w, h, feather_px=feather_px)
+                from PIL import Image as PILImage
+                mask_patch = PILImage.new("L", (pw, ph), 0)
+                mask_patch.paste(local, (offx, offy))
+        else:
+            # берём альфу из PNG
+            from PIL import Image as PILImage
+            mask_patch = PILImage.new("L", (pw, ph), 0)
+            mask_patch.paste(piece_alpha, (offx, offy))
+
+        # SVD
+        frames_piece = _svd_generate_frames(
+            pipe, patch_input, fps=fps, num_frames=num_frames, seed=123 + sid * 100
+        )
+
+        # вклейка
+        for t in range(num_frames):
+            base_frames[t] = _alpha_blend(base_frames[t], frames_piece[t], mask_patch, (x0, y0))
+
+        if progress_cb:
+            progress_cb(i, total, sid)
+
+    # экспорт видео
+    import imageio
+    os.makedirs(os.path.dirname(out_mp4_path) or ".", exist_ok=True)
+    writer = imageio.get_writer(out_mp4_path, fps=fps, codec="libx264", quality=8)
+    for t in range(num_frames):
+        writer.append_data(base_frames[t][..., :3])
+    writer.close()
+    return out_mp4_path
+
+
+class RenderWorker(QObject):
+    progress = Signal(str)
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, shapes_json_path: str, out_mp4_path: str, masks_dir: Optional[str], pieces_dir: Optional[str]):
+        super().__init__()
+        self.shapes_json_path = shapes_json_path
+        self.out_mp4_path = out_mp4_path
+        self.masks_dir = masks_dir
+        self.pieces_dir = pieces_dir
+
+    def run(self):
+        try:
+            def cb(i, total, sid):
+                self.progress.emit(f"{i}/{total} (shape {sid})")
+
+            out = render_svd_from_project(
+                self.shapes_json_path, self.out_mp4_path,
+                masks_dir=self.masks_dir, pieces_dir=self.pieces_dir,
+                progress_cb=cb
+            )
+            self.finished.emit(out)
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.error.emit(str(e) + "\n\n" + tb)
+
 
 class InSceneComboBox(QWidget):
     def __init__(self, options=None, parent=None):
@@ -196,6 +559,18 @@ class AIWindow(QMainWindow):
         self.ui.water_button.clicked.connect(lambda: self.load_tool_panel(Ui_water_tool))
         self.ui.light_button.clicked.connect(lambda: self.load_tool_panel(Ui_light_tool))
         self.ui.fire_button.clicked.connect(lambda: self.load_tool_panel(Ui_fire_tool))
+
+        # --- Render (SVD img2vid) ---
+        # Кнопка render в ui_ai_window.py: self.pushButton (text "render")
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.clicked.connect(self.on_render_clicked)
+        self.render_shapes_json_path = None
+        self.render_masks_dir = None
+        self.render_pieces_dir = None
+        self.render_out_mp4_path = None
+        self._render_thread = None
+        self._render_worker = None
+
 
         self.shape_cards = {}
         self.last_tool_type = None
@@ -375,4 +750,98 @@ class AIWindow(QMainWindow):
 
         return shape_cards_data
 
+    # ---------------------------
+    # Render button logic
+    # ---------------------------
+    def set_render_sources(self, shapes_json_path: str = None, masks_dir: str = None, pieces_dir: str = None,
+                           out_mp4_path: str = None):
+        """
+        Позволяет главному окну передать пути проекта, чтобы render работал без диалогов.
+        shapes_json_path: путь к shapes.json
+        masks_dir: папка где лежат shape_<id>.svg
+        pieces_dir: папка где лежат shape_<id>.png
+        out_mp4_path: куда сохранить mp4
+        """
+        if shapes_json_path:
+            self.render_shapes_json_path = shapes_json_path
+        if masks_dir:
+            self.render_masks_dir = masks_dir
+        if pieces_dir:
+            self.render_pieces_dir = pieces_dir
+        if out_mp4_path:
+            self.render_out_mp4_path = out_mp4_path
 
+    def on_render_clicked(self):
+        # 1) определяем shapes.json
+        shapes_json = self.render_shapes_json_path
+        if not shapes_json:
+            shapes_json, _ = QFileDialog.getOpenFileName(self, "Select shapes.json", "", "JSON (*.json)")
+            if not shapes_json:
+                return
+            self.render_shapes_json_path = shapes_json
+
+        base_dir = os.path.dirname(shapes_json)
+
+        # 2) определяем masks/pieces
+        masks_dir = self.render_masks_dir
+        if not masks_dir:
+            masks_dir = _find_first_existing(os.path.join(base_dir, "masks")) or base_dir
+            self.render_masks_dir = masks_dir
+
+        pieces_dir = self.render_pieces_dir
+        if not pieces_dir:
+            pieces_dir = _find_first_existing(os.path.join(base_dir, "pieces")) or base_dir
+            self.render_pieces_dir = pieces_dir
+
+        # 3) выход
+        out_mp4 = self.render_out_mp4_path
+        if not out_mp4:
+            out_mp4 = os.path.join(base_dir, "result.mp4")
+            self.render_out_mp4_path = out_mp4
+
+        # Запускаем в потоке, чтобы UI не зависал
+        self._start_render_thread(shapes_json, out_mp4, masks_dir, pieces_dir)
+
+    def _start_render_thread(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(False)
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText("render: starting...")
+
+        self._render_thread = QThread(self)
+        self._render_worker = RenderWorker(shapes_json, out_mp4, masks_dir, pieces_dir)
+        self._render_worker.moveToThread(self._render_thread)
+
+        self._render_thread.started.connect(self._render_worker.run)
+        self._render_worker.progress.connect(self._on_render_progress)
+        self._render_worker.finished.connect(self._on_render_finished)
+        self._render_worker.error.connect(self._on_render_error)
+
+        self._render_worker.finished.connect(self._render_thread.quit)
+        self._render_worker.error.connect(self._render_thread.quit)
+        self._render_thread.finished.connect(self._cleanup_render_thread)
+
+        self._render_thread.start()
+
+    def _on_render_progress(self, text: str):
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText("render: " + text)
+
+    def _on_render_finished(self, out_path: str):
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText("render: done")
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(True)
+        QMessageBox.information(self, "Render", f"Saved: {out_path}")
+
+    def _on_render_error(self, msg: str):
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText("render: error")
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(True)
+        QMessageBox.critical(self, "Render error", msg)
+
+    def _cleanup_render_thread(self):
+        # аккуратно освобождаем ссылки
+        self._render_worker = None
+        self._render_thread = None

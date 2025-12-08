@@ -3,22 +3,16 @@
 ################################################################################
 ## Form generated from reading UI file 'ai_window.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.9.0
+## Created by: Qt User Interface Compiler version 6.10.1
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
-    QMetaObject, QObject, QPoint, QRect,
-    QSize, QTime, QUrl, Qt)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
-    QFont, QFontDatabase, QGradient, QIcon,
-    QImage, QKeySequence, QLinearGradient, QPainter,
-    QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsView, QGridLayout,
-    QHBoxLayout, QLabel, QLayout, QMainWindow,
-    QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
-    QVBoxLayout, QWidget)
+from PySide6.QtCore import (QCoreApplication, QMetaObject, QRect,
+                            QSize, Qt)
+from PySide6.QtWidgets import (QFrame, QGraphicsView, QGridLayout,
+                               QHBoxLayout, QLabel, QLayout, QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
+                               QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -35,7 +29,7 @@ class Ui_MainWindow(object):
         self.gridLayout_2.setObjectName(u"gridLayout_2")
         self.gridLayout = QGridLayout()
         self.gridLayout.setObjectName(u"gridLayout")
-        self.gridLayout.setSizeConstraint(QLayout.SizeConstraint.SetMaximumSize)
+        self.gridLayout.setSizeConstraint(QLayout.SetDefaultConstraint)
         self.graphicsView = QGraphicsView(self.centralwidget)
         self.graphicsView.setObjectName(u"graphicsView")
 
@@ -48,8 +42,7 @@ class Ui_MainWindow(object):
         self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
         self.frame_2 = QFrame(self.centralwidget)
         self.frame_2.setObjectName(u"frame_2")
-        self.frame_2.setFrameShape(QFrame.Shape.StyledPanel)
-        self.frame_2.setFrameShadow(QFrame.Shadow.Raised)
+        self.frame_2.setFrameShape(QFrame.NoFrame)
         self.gridLayout_3 = QGridLayout(self.frame_2)
         self.gridLayout_3.setObjectName(u"gridLayout_3")
         self.horizontalLayout_3 = QHBoxLayout()
@@ -58,6 +51,11 @@ class Ui_MainWindow(object):
         self.pushButton_9.setObjectName(u"pushButton_9")
 
         self.horizontalLayout_3.addWidget(self.pushButton_9)
+
+        self.pushButton = QPushButton(self.frame_2)
+        self.pushButton.setObjectName(u"pushButton")
+
+        self.horizontalLayout_3.addWidget(self.pushButton)
 
         self.water_button = QPushButton(self.frame_2)
         self.water_button.setObjectName(u"water_button")
@@ -108,7 +106,7 @@ class Ui_MainWindow(object):
 
         self.verticalLayout = QVBoxLayout()
         self.verticalLayout.setObjectName(u"verticalLayout")
-        self.verticalLayout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+        self.verticalLayout.setSizeConstraint(QLayout.SetDefaultConstraint)
         self.frame = QFrame(self.centralwidget)
         self.frame.setObjectName(u"frame")
         sizePolicy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
@@ -118,17 +116,16 @@ class Ui_MainWindow(object):
         self.frame.setSizePolicy(sizePolicy)
         self.frame.setMinimumSize(QSize(300, 0))
         self.frame.setMaximumSize(QSize(300, 50000))
-        self.frame.setFrameShape(QFrame.Shape.StyledPanel)
-        self.frame.setFrameShadow(QFrame.Shadow.Raised)
+        self.frame.setFrameShape(QFrame.NoFrame)
         self._2 = QHBoxLayout(self.frame)
         self._2.setObjectName(u"_2")
         self.scrollArea = QScrollArea(self.frame)
         self.scrollArea.setObjectName(u"scrollArea")
-        self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scrollArea.setWidgetResizable(True)
         self.scrollAreaWidgetContents = QWidget()
         self.scrollAreaWidgetContents.setObjectName(u"scrollAreaWidgetContents")
-        self.scrollAreaWidgetContents.setGeometry(QRect(0, 0, 278, 1072))
+        self.scrollAreaWidgetContents.setGeometry(QRect(0, 0, 280, 1074))
         self.scrollArea.setWidget(self.scrollAreaWidgetContents)
 
         self._2.addWidget(self.scrollArea)
@@ -152,6 +149,7 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"MainWindow", None))
         self.pushButton_9.setText(QCoreApplication.translate("MainWindow", u"save", None))
+        self.pushButton.setText(QCoreApplication.translate("MainWindow", u"render", None))
         self.water_button.setText(QCoreApplication.translate("MainWindow", u"water tool", None))
         self.fire_button.setText(QCoreApplication.translate("MainWindow", u"fire tool", None))
         self.light_button.setText(QCoreApplication.translate("MainWindow", u"light tool", None))
