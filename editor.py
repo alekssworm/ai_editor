@@ -1,9 +1,12 @@
 import sys
+import os
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsScene,
 )
+
+from ai_panel_logic import AIWindow
 from ui_editor import Ui_MainWindow
 
 from import_image import import_image
@@ -29,7 +32,6 @@ from context_menu import on_key_press
 
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
-from ai_panel_logic import AIWindow
 from m_event import MouseMoveFilter
 
 
@@ -48,6 +50,10 @@ class MainWindow(QMainWindow):
 
         # Создаём сцену и устанавливаем в graphicsView
         self.scene = QGraphicsScene()
+
+        # последний сохранённый проект (для передачи в AI panel)
+        self.current_project_folder = None
+        self.current_shapes_json_path = None
         self.ui.graphicsView.setScene(self.scene)
 
         # Панели скрыты при старте
@@ -96,12 +102,36 @@ class MainWindow(QMainWindow):
 
         self.ui.by_point.clicked.connect(lambda: activate_polygon_mode(self))
 
-        self.ai_window = AIWindow()
-        self.ui.ai_panel.clicked.connect(self.ai_window.show)
-
-
         self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
         self.scene.installEventFilter(self.mouse_filter)
+
+        self.ai_window = AIWindow()
+        self.ai_window.hide()  # окно создано (для фантомов), но не показано
+
+        def open_ai():
+            # прокидываем пути проекта в AI panel, чтобы render не спрашивал диалоги
+            try:
+                if getattr(self, "current_shapes_json_path", None):
+                    base_dir = os.path.dirname(self.current_shapes_json_path)
+                    pieces_dir = os.path.join(base_dir, "pieces")
+                    if not os.path.isdir(pieces_dir):
+                        pieces_dir = base_dir
+                    masks_dir = os.path.join(base_dir, "masks")
+                    out_mp4 = os.path.join(base_dir, "result.mp4")
+                    self.ai_window.set_render_sources(
+                        shapes_json_path=self.current_shapes_json_path,
+                        pieces_dir=pieces_dir,
+                        masks_dir=masks_dir,
+                        out_mp4_path=out_mp4,
+                    )
+            except Exception as _e:
+                print("⚠️ Не удалось прокинуть пути в AI panel:", _e)
+
+            self.ai_window.show()
+            self.ai_window.raise_()
+            self.ai_window.activateWindow()
+
+        self.ui.ai_panel.clicked.connect(open_ai)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,9 @@ def load_scene(self):
     if not file_path:
         return
 
+    # запомним путь для AI render
+    self.current_shapes_json_path = file_path
+
     # 2. Загрузка JSON
     with open(file_path, "r", encoding="utf-8") as f:
         full_data = json.load(f)

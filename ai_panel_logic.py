@@ -4,7 +4,7 @@ import os
 import traceback
 from typing import Optional, Tuple, Callable
 
-from PySide6.QtCore import QStringListModel, QThread, QObject, Signal
+from PySide6.QtCore import QStringListModel, QThread, QObject, Signal, Qt, QTimer
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
@@ -348,7 +348,14 @@ def render_svd_from_project(shapes_json_path: str,
     # экспорт видео
     import imageio
     os.makedirs(os.path.dirname(out_mp4_path) or ".", exist_ok=True)
-    writer = imageio.get_writer(out_mp4_path, fps=fps, codec="libx264", quality=8)
+    writer = imageio.get_writer(
+        out_mp4_path,
+        fps=fps,
+        format="FFMPEG",
+        codec="libx264",
+        pixelformat="yuv420p"
+    )
+
     for t in range(num_frames):
         writer.append_data(base_frames[t][..., :3])
     writer.close()
@@ -514,7 +521,6 @@ class ShapeCard(QWidget):
 
 
 from PySide6.QtWidgets import QGraphicsWidget, QGraphicsLinearLayout, QGraphicsProxyWidget
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGraphicsItem
 
 class ShapeCardGraphicsWidget(QGraphicsWidget):
@@ -570,6 +576,10 @@ class AIWindow(QMainWindow):
         self.render_out_mp4_path = None
         self._render_thread = None
         self._render_worker = None
+
+        self._svd_job_id = None
+        self._svd_timer = QTimer(self)
+        self._svd_timer.timeout.connect(self._poll_svd_status)
 
 
         self.shape_cards = {}
@@ -799,8 +809,126 @@ class AIWindow(QMainWindow):
             out_mp4 = os.path.join(base_dir, "result.mp4")
             self.render_out_mp4_path = out_mp4
 
-        # Запускаем в потоке, чтобы UI не зависал
-        self._start_render_thread(shapes_json, out_mp4, masks_dir, pieces_dir)
+        # Запускаем удалённый рендер в WSL backend (CUDA на RTX 4070)
+        self._start_remote_render(shapes_json, out_mp4, masks_dir, pieces_dir)
+
+
+    # ---------------------------
+    # Remote render via WSL backend
+    # ---------------------------
+    def _start_remote_render(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
+        """Стартуем SVD-рендер на backend (WSL) и начинаем опрос статуса."""
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(False)
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText("render: отправка в backend...")
+    
+        from backend_async import run_in_thread
+        import backend_client
+        import os
+    
+        try:
+            print(f"[DEBUG] backend_client={backend_client.__file__}")
+            print(f"[DEBUG] BASE={getattr(backend_client,'BASE',None)}")
+            print(f"[DEBUG] shapes_json={shapes_json} exists={os.path.exists(shapes_json)}")
+            print(f"[DEBUG] out_mp4={out_mp4}")
+        except Exception:
+            pass
+    
+        def _ok(res: object):
+            job_id = res if isinstance(res, str) else (res.get("job_id") if isinstance(res, dict) else None)
+            if not job_id:
+                if hasattr(self.ui, "pushButton"):
+                    self.ui.pushButton.setEnabled(True)
+                try:
+                    print(f"[DEBUG] [RENDER] unexpected response: {res}")
+                except Exception:
+                    pass
+                QMessageBox.critical(self, "Render error", f"Backend вернул неожиданный ответ: {res}")
+                return
+    
+            self._svd_job_id = str(job_id)
+            if hasattr(self.ui, "label_14"):
+                self.ui.label_14.setText(f"render: queued ({self._svd_job_id})")
+            try:
+                print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
+            except Exception:
+                pass
+            self._svd_timer.start(1000)
+    
+        def _err(msg: str):
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+            if hasattr(self.ui, "label_14"):
+                self.ui.label_14.setText("render: error")
+            try:
+                print(f"[DEBUG] [RENDER] error: {msg}")
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Render error", str(msg))
+    
+        run_in_thread(
+            self,
+            backend_client.start_svd_render,
+            _ok,
+            _err,
+            shapes_json,
+            out_mp4,
+            masks_dir=masks_dir,
+            pieces_dir=pieces_dir,
+            timeout=30.0,
+        )
+
+    def _poll_svd_status(self):
+        """Опрос статуса job_id и обновление UI."""
+        job_id = getattr(self, "_svd_job_id", None)
+        if not job_id:
+            return
+    
+        import backend_client
+    
+        try:
+            st = backend_client.get_svd_status(job_id, timeout=5.0)
+        except Exception as e:
+            if hasattr(self.ui, "label_14"):
+                self.ui.label_14.setText(f"render: status error ({e})")
+            try:
+                print(f"[DEBUG] [RENDER] status error: {e}")
+            except Exception:
+                pass
+            return
+    
+        state = st.get("state")
+        prog = st.get("progress") or {}
+        stage = prog.get("stage")
+    
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText(f"render: {state} ({stage})")
+    
+        if state == "done":
+            self._svd_timer.stop()
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+            result = st.get("result") or {}
+            out_win = result.get("out_mp4_win") or result.get("out_mp4") or ""
+            out_wsl = result.get("out_mp4_wsl") or ""
+            try:
+                print(f"[DEBUG] [RENDER] done out_win={out_win} out_wsl={out_wsl}")
+            except Exception:
+                pass
+            QMessageBox.information(self, "Render", f"Saved:\n{out_win or out_wsl}")
+            return
+    
+        if state == "error":
+            self._svd_timer.stop()
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+            err = st.get("error") or "unknown error"
+            try:
+                print(f"[DEBUG] [RENDER] error state: {err}")
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Render error", str(err))
 
     def _start_render_thread(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
         if hasattr(self.ui, "pushButton"):

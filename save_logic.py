@@ -13,6 +13,9 @@ def save_outputs(self):
         print("❌ Сохранение отменено.")
         return
 
+    pieces_dir = os.path.join(folder, "pieces")
+    os.makedirs(pieces_dir, exist_ok=True)
+
     background = next((item for item in self.scene.items() if isinstance(item, QGraphicsPixmapItem)), None)
     if not background:
         print("❌ Фон не найден.")
@@ -20,8 +23,19 @@ def save_outputs(self):
 
     original_image_path = background.data(Qt.UserRole) if background.data(Qt.UserRole) else ""
     original_image = background.pixmap().toImage()
+    # ✅ гарантируем альфа-канал: иначе CompositionMode_Clear даст чёрный цвет вместо прозрачности
+    if original_image.format() != QImage.Format_ARGB32:
+        original_image = original_image.convertToFormat(QImage.Format_ARGB32)
     without_shape_image = QImage(original_image)
     clean_parent_image = QImage(original_image)
+
+    # ✅ сохраняем фон рядом с проектом (относительный путь в shapes.json)
+    bg_out_path = os.path.join(folder, 'background.png')
+    try:
+        original_image.save(bg_out_path)
+    except Exception as e:
+        print('⚠ Не удалось сохранить background.png:', e)
+    bg_for_json = 'background.png'
 
     shape_data = []
     index = 1
@@ -43,6 +57,13 @@ def save_outputs(self):
         shape_rect = item.sceneBoundingRect().toRect()
         brush_color = item.brush().color().name()
 
+        if shape_id is None:
+            continue
+        # ✅ пропускаем мусорные/нулевые фигуры (0x0), чтобы не ломать экспорт и рендер
+        if shape_rect.width() < 2 or shape_rect.height() < 2:
+            print(f'⚠ Пропуск слишком маленькой фигуры id={shape_id}: {shape_rect}')
+            continue
+
         if isinstance(item, SelectableCircleItem):
             item_type = "Circle"
             path = QPainterPath()
@@ -58,7 +79,7 @@ def save_outputs(self):
             cut_painter.drawImage(0, 0, original_crop)
             cut_painter.end()
 
-            cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+            cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
 
             # ВАЖНО: очистить круг с фона
             global_path = QPainterPath()
@@ -91,6 +112,9 @@ def save_outputs(self):
         elif isinstance(item, SelectablePolygonItem):
             item_type = "Polygon"
             polygon = item.polygon()
+            if polygon.count() < 3:
+                print(f'⚠ Пропуск полигона с <3 точками id={shape_id}')
+                continue
             path = QPainterPath()
             path.addPolygon(polygon.translated(-shape_rect.topLeft()))
         else:
@@ -111,7 +135,7 @@ def save_outputs(self):
         cut_painter.fillPath(mask, Qt.transparent)
         cut_painter.end()
 
-        cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+        cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
 
         global_path = QPainterPath()
         if item_type == "Polygon":
@@ -153,6 +177,13 @@ def save_outputs(self):
         shape_rect = item.sceneBoundingRect().toRect()
         brush_color = item.brush().color().name()
 
+        if shape_id is None:
+            continue
+        # ✅ пропускаем мусорные/нулевые фигуры (0x0), чтобы не ломать экспорт и рендер
+        if shape_rect.width() < 2 or shape_rect.height() < 2:
+            print(f'⚠ Пропуск слишком маленькой фигуры id={shape_id}: {shape_rect}')
+            continue
+
         if isinstance(item, SelectableCircleItem):
             item_type = "Circle"
             path = QPainterPath()
@@ -168,7 +199,7 @@ def save_outputs(self):
             cut_painter.drawImage(0, 0, original_crop)
             cut_painter.end()
 
-            cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+            cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
 
             # ВАЖНО: удалить круг с общего фона
             global_path = QPainterPath()
@@ -199,6 +230,9 @@ def save_outputs(self):
         elif isinstance(item, SelectablePolygonItem):
             item_type = "Polygon"
             polygon = item.polygon()
+            if polygon.count() < 3:
+                print(f'⚠ Пропуск полигона с <3 точками id={shape_id}')
+                continue
             path = QPainterPath()
             path.addPolygon(polygon.translated(-shape_rect.topLeft()))
         else:
@@ -236,7 +270,7 @@ def save_outputs(self):
         cut_painter.fillPath(mask, Qt.transparent)
         cut_painter.end()
 
-        cut_image.save(os.path.join(folder, f"shape_{index}.png"))
+        cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
 
         global_path = QPainterPath()
         if item_type == "Polygon":
@@ -279,11 +313,42 @@ def save_outputs(self):
             shape_cards_data = self.ai_window.collect_shape_cards_data()
         else:
             shape_cards_data = []
+        # ✅ чистим shape_cards: оставляем только карточки реально сохранённых фигур
+        valid_ids = set()
+        for s in shape_data:
+            try:
+                valid_ids.add(int(s.get('id')))
+            except Exception:
+                pass
+
+        filtered_cards = []
+        for c in shape_cards_data:
+            if not isinstance(c, dict):
+                continue
+            try:
+                cid = int(c.get('id'))
+            except Exception:
+                continue
+            if cid in valid_ids:
+                filtered_cards.append(c)
+        shape_cards_data = filtered_cards
         json.dump({
-            "background": original_image_path,
-            "shapes": shape_data,
-            "shape_cards": shape_cards_data
+            'background': bg_for_json,
+            'shapes': shape_data,
+            'shape_cards': shape_cards_data
         }, f, indent=4)
+
+    # Передаём пути в AI panel, чтобы render работал без диалогов
+    if hasattr(self, "ai_window"):
+        try:
+            self.ai_window.set_render_sources(
+                shapes_json_path=os.path.join(folder, "shapes.json"),
+                masks_dir=os.path.join(folder, "masks"),
+                pieces_dir=pieces_dir,
+                out_mp4_path=os.path.join(folder, "result.mp4"),
+            )
+        except Exception:
+            pass
 
     print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
 
