@@ -1,6 +1,7 @@
 # backend_async.py
 from PySide6.QtCore import QObject, Signal, Slot, QThread
 
+
 class BackendWorker(QObject):
     finished = Signal(object)
     error = Signal(str)
@@ -19,17 +20,39 @@ class BackendWorker(QObject):
         except Exception as e:
             self.error.emit(str(e))
 
+
+class CallbackRelay(QObject):
+    """Deliver worker results on the thread that created the relay (normally the UI thread)."""
+
+    def __init__(self, on_ok, on_err, parent=None):
+        super().__init__(parent)
+        self.on_ok = on_ok
+        self.on_err = on_err
+        self.on_cleanup = None
+
+    @Slot(object)
+    def success(self, result):
+        self.on_ok(result)
+
+    @Slot(str)
+    def failure(self, message):
+        self.on_err(message)
+
+    @Slot()
+    def cleanup(self):
+        if self.on_cleanup is not None:
+            self.on_cleanup()
+
+
 def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
-    """
-    owner — это self твоего окна (MainWindow/AIWindow).
-    Важно хранить ссылки на thread И worker в owner, иначе PySide может
-    собрать worker GC и тогда thread стартует, но ничего не выполнится.
-    """
+    """Run a function in a worker and deliver its callbacks on the owner's thread."""
     if not hasattr(owner, "_backend_jobs") or owner._backend_jobs is None:
         owner._backend_jobs = []
 
     thread = QThread()
     worker = BackendWorker(func, *args, **kwargs)
+    relay_parent = owner if isinstance(owner, QObject) else None
+    relay = CallbackRelay(on_ok, on_err, relay_parent)
     worker.moveToThread(thread)
 
     def _dbg(msg: str):
@@ -41,8 +64,8 @@ def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
     _dbg("[ASYNC] start backend thread")
 
     thread.started.connect(worker.run)
-    worker.finished.connect(on_ok)
-    worker.error.connect(on_err)
+    worker.finished.connect(relay.success)
+    worker.error.connect(relay.failure)
 
     worker.finished.connect(thread.quit)
     worker.error.connect(thread.quit)
@@ -51,8 +74,9 @@ def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
     worker.error.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
 
-    # держим ссылки на thread+worker, иначе “ничего не происходит”
-    job = {"thread": thread, "worker": worker}
+    # Keep strong references until the worker finishes; otherwise PySide may
+    # garbage-collect the thread before it has a chance to run.
+    job = {"thread": thread, "worker": worker, "relay": relay}
     owner._backend_jobs.append(job)
 
     def _cleanup():
@@ -62,5 +86,6 @@ def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
             pass
         _dbg("[ASYNC] backend thread finished")
 
-    thread.finished.connect(_cleanup)
+    relay.on_cleanup = _cleanup
+    thread.finished.connect(relay.cleanup)
     thread.start()

@@ -54,7 +54,8 @@ def mask_from_shape(shape: dict[str, Any], size: tuple[int, int]) -> Image.Image
     return mask
 
 
-def _shape_card(project: dict[str, Any], shape_id: int) -> dict[str, Any]:
+def find_shape_card(project: dict[str, Any], shape_id: int) -> dict[str, Any]:
+    """Return the saved effect card for a shape, or an empty mapping."""
     for card in project.get("shape_cards", []):
         try:
             card_id = int(card.get("id"))
@@ -85,9 +86,10 @@ def prepare_project_shape(
         raise KeyError(f"Shape id={requested_id} not found")
 
     background_path = resolve_background_path(path, project)
-    image = Image.open(background_path).convert("RGB")
+    with Image.open(background_path) as source:
+        image = source.convert("RGB")
     rough_mask = mask_from_shape(shape, image.size)
-    card = _shape_card(project, requested_id)
+    card = find_shape_card(project, requested_id)
     resolved_effect = str(effect_type or card.get("tool_type") or "water").lower()
     target = Path(output_dir) if output_dir else path.parent / "effect_assets" / f"shape_{requested_id}"
 

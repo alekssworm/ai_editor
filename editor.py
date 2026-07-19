@@ -33,6 +33,7 @@ from context_menu import on_key_press
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
 from m_event import MouseMoveFilter
+from effect_preview import start_effect_preview
 
 
 class MainWindow(QMainWindow):
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self.ui.Circle.clicked.connect(lambda: activate_circle_mode(self))
         self.ui.save_button.clicked.connect(lambda: save_outputs(self))
         self.ui.Resizable_button.clicked.connect(lambda: show_all_handles(self))
+        self.ui.preview_button.clicked.connect(lambda: start_effect_preview(self))
 
         # Подключение селектора
         self.scene.selectionChanged.connect(lambda: on_shape_selected(self))

@@ -21,3 +21,14 @@ python -m effect_engine render --project path\to\shapes.json --assets path\to\ef
 ```
 
 The renderer samples `t = frame_index / frame_count`; it never writes a duplicate final frame. Internally every animation phase uses periodic functions and normalizes `t` with modulo, so the state immediately after the last frame is exactly the state at `t=0`.
+
+## Editor preview
+
+Save or open a project, select one shape with a water card, then press the main
+window's `preview` button. Preparation runs outside the UI thread and writes the
+full-resolution maps to `effect_assets/shape_<id>`. The preview dialog renders a
+smaller 640-pixel copy of those maps as an 18-frame loop, so preview speed does
+not reduce the quality of assets kept for export.
+
+The current deterministic renderer supports the water tool. Fire, weather and
+light cards produce a clear error until their renderers are implemented.

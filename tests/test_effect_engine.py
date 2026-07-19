@@ -10,6 +10,7 @@ from PIL import Image
 
 from effect_engine.models import EffectAssets
 from effect_engine.preparation import PreparationPipeline
+from effect_engine.preview import build_project_preview, renderer_params_from_card
 from effect_engine.project import prepare_project_shape
 from effect_engine.renderer import DeterministicEffectEngine
 from effect_engine.storage import EffectAssetStore
@@ -115,6 +116,74 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(assets.metadata["shape_id"], 7)
             self.assertTrue((target / "manifest.json").exists())
             self.assertGreater(float(assets.mask.max()), 0.9)
+
+    def test_water_card_settings_are_mapped_to_renderer_params(self) -> None:
+        card = {
+            "tool_type": "water",
+            "main": {
+                "key": "main_waterfall",
+                "params": {
+                    "intensity": "high",
+                    "power": "normal",
+                    "opacity": "low",
+                    "randomness": "high",
+                },
+            },
+        }
+
+        params = renderer_params_from_card(card)
+
+        self.assertAlmostEqual(params["strength"], 8.7)
+        self.assertAlmostEqual(params["opacity"], 0.45)
+        self.assertLess(params["secondary_wavelength"], 24.0)
+
+    def test_project_preview_keeps_full_assets_and_downscales_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 3,
+                        "type": "Rectangle",
+                        "x": 5,
+                        "y": 4,
+                        "width": 35,
+                        "height": 25,
+                    }
+                ],
+                "shape_cards": [
+                    {
+                        "id": 3,
+                        "tool_type": "water",
+                        "main": {
+                            "key": "main_river",
+                            "name": "river",
+                            "params": {"intensity": "normal", "opacity": "high"},
+                        },
+                        "sub": [],
+                    }
+                ],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            result = build_project_preview(
+                project_path,
+                3,
+                frame_count=6,
+                fps=10,
+                max_dimension=24,
+                seed=17,
+            )
+            stored = EffectAssetStore.load(result.assets_dir)
+
+            self.assertEqual(len(result.frames), 6)
+            self.assertEqual(result.frames[0].size, (24, 18))
+            self.assertEqual(stored.size, self.image.size)
+            self.assertEqual(stored.seed, 17)
+            self.assertEqual(result.params["opacity"], 1.0)
 
 
 if __name__ == "__main__":
