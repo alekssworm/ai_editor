@@ -34,6 +34,7 @@ from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
 from m_event import MouseMoveFilter
 from effect_preview import start_effect_preview
+from flow_direction_tool import FlowDirectionController
 
 
 class MainWindow(QMainWindow):
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
         # Регистрация фигур
         self.shape_registry = {}  # {id: QGraphicsItem}
         self.shape_id_counter = 1
+        self.flow_directions = {}  # {shape_id: normalized (x, y)}
 
         # Кнопки UI
         self.ui.tools_Button.clicked.connect(lambda: toggle_tools_panel(self))
@@ -84,6 +86,12 @@ class MainWindow(QMainWindow):
         # Настройки рисования
         self.current_shape_color = QColor(255, 0, 0, 50)
         self.draw_controller = DrawingToolController(self.scene, self)
+        self.flow_direction_controller = FlowDirectionController(self)
+        self.ui.settings.setToolTip("Set flow direction for the selected area")
+        self.ui.settings.clicked.connect(self.flow_direction_controller.toggle)
+        self.scene.selectionChanged.connect(
+            self.flow_direction_controller.refresh_for_selection
+        )
 
         # 🧠 Важно: добавляем overlay после сцены
         self.navigation_overlay = NavigationOverlay(self.ui.graphicsView, self)

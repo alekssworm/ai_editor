@@ -10,9 +10,12 @@ def import_image(self):
         pixmap = QPixmap(file_path)
         pixmap_item = QGraphicsPixmapItem(pixmap)
         pixmap_item.setData(Qt.UserRole, file_path)  # ✅ Сохраняем путь
+        if hasattr(self, "flow_direction_controller"):
+            self.flow_direction_controller.reset()
         self.scene.clear()
         self.shape_registry.clear()
         self.shape_parents.clear()
+        self.flow_directions.clear()
         self.shape_id_counter = 1
         self.ui.listWidget.clear()
         self.current_project_folder = None

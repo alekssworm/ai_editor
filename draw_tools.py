@@ -29,6 +29,8 @@ def _remove_shape_item(item):
 
         main_window.shape_registry.pop(shape_id, None)
         main_window.shape_parents.pop(shape_id, None)
+        if hasattr(main_window, "flow_directions"):
+            main_window.flow_directions.pop(shape_id, None)
         for child_id, parent_id in list(main_window.shape_parents.items()):
             if parent_id == shape_id:
                 main_window.shape_parents[child_id] = None
@@ -332,4 +334,3 @@ class SelectablePolygonItem(QGraphicsPolygonItem, ShapeItem):
             self.toggle_fill()
         elif action == delete_action:
             _remove_shape_item(self)
-

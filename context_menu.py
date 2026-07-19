@@ -15,6 +15,8 @@ def on_key_press(self, event):
         self.scene.removeItem(item)
         self.shape_registry.pop(shape_id, None)
         self.shape_parents.pop(shape_id, None)
+        if hasattr(self, "flow_directions"):
+            self.flow_directions.pop(shape_id, None)
         for child_id, parent_id in list(self.shape_parents.items()):
             if parent_id == shape_id:
                 self.shape_parents[child_id] = None

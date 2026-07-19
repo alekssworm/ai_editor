@@ -11,7 +11,12 @@ from PIL import Image
 from effect_engine.models import EffectAssets
 from effect_engine.preparation import PreparationPipeline
 from effect_engine.preview import build_project_preview, renderer_params_from_card
-from effect_engine.project import prepare_project_shape
+from effect_engine.project import (
+    normalize_direction,
+    prepare_project_shape,
+    project_flow_direction,
+    serialize_flow_directions,
+)
 from effect_engine.renderer import DeterministicEffectEngine
 from effect_engine.storage import EffectAssetStore
 
@@ -101,6 +106,7 @@ class EffectEngineTests(unittest.TestCase):
                     }
                 ],
                 "shape_cards": [{"id": 7, "tool_type": "water", "main": None, "sub": []}],
+                "flow_directions": {"7": {"x": 0, "y": -2}},
             }
             project_path = root / "shapes.json"
             project_path.write_text(json.dumps(project), encoding="utf-8")
@@ -109,13 +115,26 @@ class EffectEngineTests(unittest.TestCase):
                 project_path,
                 7,
                 seed=9,
-                direction=(0.8, 0.3),
             )
 
             self.assertEqual(assets.effect_type, "water")
             self.assertEqual(assets.metadata["shape_id"], 7)
             self.assertTrue((target / "manifest.json").exists())
             self.assertGreater(float(assets.mask.max()), 0.9)
+            np.testing.assert_allclose(assets.flow[..., 0], 0.0)
+            np.testing.assert_allclose(assets.flow[..., 1], -1.0)
+
+    def test_flow_direction_round_trip_and_project_lookup(self) -> None:
+        serialized = serialize_flow_directions(
+            {3: (3.0, 4.0), "5": {"x": 0, "y": -2}, 9: (0, 0)},
+            {3, 5, 9},
+        )
+        project = {"flow_directions": serialized, "shapes": []}
+
+        self.assertEqual(serialized["3"], {"x": 0.6, "y": 0.8})
+        self.assertNotIn("9", serialized)
+        self.assertEqual(project_flow_direction(project, 5), (0.0, -1.0))
+        self.assertIsNone(normalize_direction({"x": "bad", "y": 1}))
 
     def test_water_card_settings_are_mapped_to_renderer_params(self) -> None:
         card = {
@@ -172,6 +191,7 @@ class EffectEngineTests(unittest.TestCase):
             result = build_project_preview(
                 project_path,
                 3,
+                direction_override=(0.0, -3.0),
                 frame_count=6,
                 fps=10,
                 max_dimension=24,
@@ -184,6 +204,9 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(stored.size, self.image.size)
             self.assertEqual(stored.seed, 17)
             self.assertEqual(result.params["opacity"], 1.0)
+            np.testing.assert_allclose(stored.flow[..., 0], 0.0)
+            np.testing.assert_allclose(stored.flow[..., 1], -1.0)
+            self.assertEqual(stored.metadata["direction"], [0.0, -1.0])
 
 
 if __name__ == "__main__":

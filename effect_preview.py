@@ -151,6 +151,7 @@ def start_effect_preview(window) -> None:
             if card_id == shape_id:
                 card_override = card
                 break
+    direction_override = getattr(window, "flow_directions", {}).get(shape_id)
 
     def restore_button() -> None:
         window._effect_preview_running = False
@@ -189,6 +190,7 @@ def start_effect_preview(window) -> None:
         project_path,
         shape_id,
         card_override=card_override,
+        direction_override=direction_override,
         frame_count=18,
         fps=12,
         max_dimension=640,

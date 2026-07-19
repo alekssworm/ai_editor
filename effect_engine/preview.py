@@ -131,6 +131,7 @@ def build_project_preview(
     shape_id: int,
     *,
     card_override: Mapping[str, Any] | None = None,
+    direction_override: tuple[float, float] | None = None,
     frame_count: int = 18,
     fps: int = 12,
     max_dimension: int = 640,
@@ -155,6 +156,7 @@ def build_project_preview(
         shape_id,
         effect_type=effect_type,
         seed=seed,
+        direction=direction_override,
     )
     background_path = resolve_background_path(path, project)
     with Image.open(background_path) as source:

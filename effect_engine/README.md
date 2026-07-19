@@ -32,3 +32,10 @@ not reduce the quality of assets kept for export.
 
 The current deterministic renderer supports the water tool. Fire, weather and
 light cards produce a clear error until their renderers are implemented.
+
+### Flow direction
+
+Select an area and press `settings`, then drag over the area in the intended
+direction of motion. The normalized vector is displayed as a cyan arrow, saved
+under `flow_directions` in `shapes.json`, and used by both Preview and CLI asset
+preparation. Right-click, `Esc`, or a second press on `settings` cancels editing.

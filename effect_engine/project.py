@@ -1,14 +1,74 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping, Sequence
 
 from PIL import Image, ImageDraw
 
 from .models import EffectAssets
 from .preparation import PreparationPipeline
 from .storage import EffectAssetStore
+
+
+def normalize_direction(value: Any) -> tuple[float, float] | None:
+    """Parse and normalize a saved direction vector."""
+    if isinstance(value, Mapping):
+        raw_x = value.get("x", value.get("dx"))
+        raw_y = value.get("y", value.get("dy"))
+    elif (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes))
+        and len(value) >= 2
+    ):
+        raw_x, raw_y = value[0], value[1]
+    else:
+        return None
+
+    try:
+        x, y = float(raw_x), float(raw_y)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    length = math.hypot(x, y)
+    if length < 1e-8:
+        return None
+    return x / length, y / length
+
+
+def project_flow_direction(
+    project: Mapping[str, Any], shape_id: int
+) -> tuple[float, float] | None:
+    directions = project.get("flow_directions") or {}
+    if isinstance(directions, Mapping):
+        raw = directions.get(str(int(shape_id)), directions.get(int(shape_id)))
+        parsed = normalize_direction(raw)
+        if parsed is not None:
+            return parsed
+
+    for shape in project.get("shapes", []):
+        try:
+            current_id = int(shape.get("id"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if current_id == int(shape_id):
+            return normalize_direction(shape.get("flow_direction"))
+    return None
+
+
+def serialize_flow_directions(
+    directions: Mapping[Any, Any], shape_ids: Iterable[int]
+) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
+    for raw_shape_id in shape_ids:
+        shape_id = int(raw_shape_id)
+        value = directions.get(shape_id, directions.get(str(shape_id)))
+        direction = normalize_direction(value)
+        if direction is not None:
+            result[str(shape_id)] = {"x": direction[0], "y": direction[1]}
+    return result
 
 
 def load_project(project_path: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -93,13 +153,17 @@ def prepare_project_shape(
     resolved_effect = str(effect_type or card.get("tool_type") or "water").lower()
     target = Path(output_dir) if output_dir else path.parent / "effect_assets" / f"shape_{requested_id}"
 
+    resolved_direction = normalize_direction(direction)
+    if resolved_direction is None:
+        resolved_direction = project_flow_direction(project, requested_id)
+
     preparer = pipeline or PreparationPipeline()
     assets = preparer.prepare(
         image,
         rough_mask,
         effect_type=resolved_effect,
         seed=int(seed),
-        direction=direction,
+        direction=resolved_direction,
         metadata={
             "project": path.name,
             "shape_id": requested_id,

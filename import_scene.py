@@ -2,6 +2,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPolygonF
 
 from draw_tools import SelectablePolygonItem
+from effect_engine.project import project_flow_direction
 
 
 def load_scene(self):
@@ -32,10 +33,13 @@ def load_scene(self):
     self.current_project_folder = project_dir
 
     # 3. Очистка сцены
+    if hasattr(self, "flow_direction_controller"):
+        self.flow_direction_controller.reset()
     self.scene.clear()
     self.shape_registry.clear()
     self.shape_id_counter = 1
     self.shape_parents = {}
+    self.flow_directions = {}
     self.ui.listWidget.clear()
     if hasattr(self, "ai_window"):
         self.ai_window.reset_project_state()
@@ -80,6 +84,9 @@ def load_scene(self):
 
         self.scene.addItem(item)
         self.shape_registry[shape_id] = item
+        direction = project_flow_direction(full_data, shape_id)
+        if direction is not None:
+            self.flow_directions[shape_id] = direction
         add_shape_to_list(self.ui, shape_id, color)
         if hasattr(self, "ai_window"):
             self.ai_window.add_shape_card(shape_id, item_type, color.name())
@@ -89,3 +96,5 @@ def load_scene(self):
 
     if hasattr(self, "ai_window"):
         self.ai_window.restore_shape_cards_data(full_data.get("shape_cards", []))
+    if hasattr(self, "flow_direction_controller"):
+        self.flow_direction_controller.refresh_for_selection()

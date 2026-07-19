@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem
 from PySide6.QtGui import QImage, QPainter, Qt, QPainterPath
 from draw_tools import SelectableCircleItem, ResizableRectItem, ShapeItem
 from draw_tools import SelectablePolygonItem
+from effect_engine.project import serialize_flow_directions
 
 def save_outputs(self):
 
@@ -334,10 +335,14 @@ def save_outputs(self):
             if cid in valid_ids:
                 filtered_cards.append(c)
         shape_cards_data = filtered_cards
+        flow_directions = serialize_flow_directions(
+            getattr(self, "flow_directions", {}), valid_ids
+        )
         json.dump({
             'background': bg_for_json,
             'shapes': shape_data,
-            'shape_cards': shape_cards_data
+            'shape_cards': shape_cards_data,
+            'flow_directions': flow_directions,
         }, f, indent=4)
 
     self.current_project_folder = folder
