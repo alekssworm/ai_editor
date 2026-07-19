@@ -64,4 +64,3 @@ def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
 
     thread.finished.connect(_cleanup)
     thread.start()
-

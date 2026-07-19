@@ -13,6 +13,32 @@ class ShapeItem:
     pass
 
 
+def _remove_shape_item(item):
+    """Remove a shape and all editor-side references to it."""
+    scene = item.scene()
+    if scene is None:
+        return
+
+    main_window = scene.views()[0].window() if scene.views() else None
+    shape_id = None
+    if main_window is not None and hasattr(main_window, "shape_registry"):
+        shape_id = next((sid for sid, obj in main_window.shape_registry.items() if obj == item), None)
+
+    if shape_id is not None:
+        from obj_list_logic import remove_shape_from_list
+
+        main_window.shape_registry.pop(shape_id, None)
+        main_window.shape_parents.pop(shape_id, None)
+        for child_id, parent_id in list(main_window.shape_parents.items()):
+            if parent_id == shape_id:
+                main_window.shape_parents[child_id] = None
+        remove_shape_from_list(main_window.ui, shape_id)
+        if hasattr(main_window, "ai_window"):
+            main_window.ai_window.remove_shape_card(shape_id)
+
+    scene.removeItem(item)
+
+
 class ResizeHandleItem(QGraphicsRectItem):
     def __init__(self, parent, corner, size=8):
         super().__init__(-size / 2, -size / 2, size, size, parent)
@@ -152,17 +178,7 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         if action == toggle_action:
             self.toggle_fill()
         elif action == delete_action:
-            scene = self.scene()
-            if scene and scene.views():
-                main_window = scene.views()[0].window()
-                if hasattr(main_window, "shape_registry"):
-                    for sid, obj in list(main_window.shape_registry.items()):
-                        if obj == self:
-                            from obj_list_logic import remove_shape_from_list
-                            remove_shape_from_list(main_window.ui, sid)
-                            del main_window.shape_registry[sid]
-                            break
-            scene.removeItem(self)
+            _remove_shape_item(self)
 
 
 class SelectableCircleItem(QGraphicsEllipseItem, ShapeItem):
@@ -241,17 +257,7 @@ class SelectableCircleItem(QGraphicsEllipseItem, ShapeItem):
         if action == toggle_action:
             self.toggle_fill()
         elif action == delete_action:
-            scene = self.scene()
-            if scene and scene.views():
-                main_window = scene.views()[0].window()
-                if hasattr(main_window, "shape_registry"):
-                    for sid, obj in list(main_window.shape_registry.items()):
-                        if obj == self:
-                            from obj_list_logic import remove_shape_from_list
-                            remove_shape_from_list(main_window.ui, sid)
-                            del main_window.shape_registry[sid]
-                            break
-            scene.removeItem(self)
+            _remove_shape_item(self)
 
     def setRect(self, rect):
         if hasattr(self, "_updating") and self._updating:
@@ -325,16 +331,5 @@ class SelectablePolygonItem(QGraphicsPolygonItem, ShapeItem):
         if action == toggle_action:
             self.toggle_fill()
         elif action == delete_action:
-            scene = self.scene()
-            if scene and scene.views():
-                main_window = scene.views()[0].window()
-                if hasattr(main_window, "shape_registry"):
-                    for sid, obj in list(main_window.shape_registry.items()):
-                        if obj == self:
-                            from obj_list_logic import remove_shape_from_list
-                            remove_shape_from_list(main_window.ui, sid)
-                            del main_window.shape_registry[sid]
-                            break
-            scene.removeItem(self)
-
+            _remove_shape_item(self)
 

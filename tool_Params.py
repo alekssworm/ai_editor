@@ -8,7 +8,7 @@ TOOL_PARAMETERS = {
     "sub_sparks": ["spark count", "intensity"],
     "sub_smoke": ["intensity", "smoke length"],
     "sub_heat_distortion": ["distortion strength", "grain"],
-    "sub_pulse": ["glow pulse", "intensity"],
+    "fire:sub_pulse": ["glow pulse", "intensity"],
     "sub_shadow_flicker": ["flicker speed", "opacity"],
     "sub_light_glow": ["light radius", "glow pulse"],
 
@@ -17,7 +17,7 @@ TOOL_PARAMETERS = {
     "main_Object_Light": ["intensity", "radius", "frequency", "duration", "glow depth", "count"],
     "main_lightning": ["bolt width", "light radius", "branch count", "frequency", "opacity", "duration"],
 
-    "sub_pulse": ["pulse speed", "glow depth"],
+    "light:sub_pulse": ["pulse speed", "glow depth"],
     "sub_flicker": ["frequency", "intensity"],
     "sub_glow_spread": ["glow depth", "radius"],
     "sub_trail": ["duration", "opacity"],

@@ -90,8 +90,6 @@ class MainWindow(QMainWindow):
 
         self.ui.listWidget.itemClicked.connect(lambda item: on_list_item_selected(self, item))
 
-        self.keyPressEvent = lambda : on_key_press
-
         self.fill_hidden_global = False
         self.ui.eye_Button.clicked.connect(lambda: toggle_all_fill(self))
 
@@ -132,6 +130,10 @@ class MainWindow(QMainWindow):
             self.ai_window.activateWindow()
 
         self.ui.ai_panel.clicked.connect(open_ai)
+
+    def keyPressEvent(self, event):
+        if not on_key_press(self, event):
+            super().keyPressEvent(event)
 
 
 if __name__ == "__main__":

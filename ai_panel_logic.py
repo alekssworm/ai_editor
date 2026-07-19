@@ -598,9 +598,112 @@ class AIWindow(QMainWindow):
 
         print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
 
+    def clear_shape_cards(self):
+        """Reset cards when a new image or project replaces the current scene."""
+        self.scene.clear()
+        self.shape_cards.clear()
+        self.last_tool_type = None
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.clear()
+
+    def reset_project_state(self):
+        self.clear_shape_cards()
+        self.render_shapes_json_path = None
+        self.render_masks_dir = None
+        self.render_pieces_dir = None
+        self.render_out_mp4_path = None
+        self._svd_job_id = None
+        self._svd_timer.stop()
+
+    def remove_shape_card(self, shape_id):
+        widget = self.shape_cards.pop(shape_id, None)
+        if widget is not None and widget.scene() is self.scene:
+            self.scene.removeItem(widget)
+
+    @staticmethod
+    def _normalize_effect_name(value):
+        return "".join(ch for ch in str(value).casefold() if ch.isalnum())
+
+    def _infer_effect_key(self, tool_type, display_name):
+        """Resolve old project entries that were saved without a stable effect key."""
+        target = self._normalize_effect_name(display_name)
+        for param_key in TOOL_PARAMETERS:
+            namespace, separator, button_name = param_key.partition(":")
+            if not separator:
+                button_name = namespace
+            elif namespace != tool_type:
+                continue
+
+            visible_name = button_name.split("_", 1)[-1].replace("_", " ")
+            if self._normalize_effect_name(visible_name) == target:
+                return button_name
+        return None
+
+    def restore_shape_cards_data(self, cards):
+        """Restore saved effect blocks after the editor scene has been loaded."""
+        if not isinstance(cards, list):
+            return
+
+        previous_tool = self.last_tool_type
+        previous_label = self.ui.label_14.text() if hasattr(self.ui, "label_14") else ""
+
+        for card_data in cards:
+            if not isinstance(card_data, dict):
+                continue
+            try:
+                shape_id = int(card_data.get("id"))
+            except (TypeError, ValueError):
+                continue
+            graphics_widget = self.shape_cards.get(shape_id)
+            tool_type = str(card_data.get("tool_type") or "").lower()
+            if graphics_widget is None or not tool_type:
+                continue
+
+            proxy = graphics_widget.layout().itemAt(0)
+            shape_card = proxy.widget() if proxy else None
+            if shape_card is None:
+                continue
+
+            entries = []
+            if isinstance(card_data.get("main"), dict):
+                entries.append(card_data["main"])
+            entries.extend(entry for entry in card_data.get("sub", []) if isinstance(entry, dict))
+
+            self.last_tool_type = f"Ui_{tool_type}_tool"
+            self.ui.label_14.setText(str(shape_id))
+            for entry in entries:
+                display_name = str(entry.get("name") or "").strip()
+                effect_key = str(entry.get("key") or "").strip()
+                if not effect_key:
+                    effect_key = self._infer_effect_key(tool_type, display_name) or ""
+                if not effect_key:
+                    continue
+                if not display_name:
+                    display_name = effect_key.split("_", 1)[-1].replace("_", " ")
+
+                count_before = shape_card.frame_layout.count()
+                self.add_button_name_to_shape_card(display_name, effect_key)
+                if shape_card.frame_layout.count() == count_before:
+                    continue
+
+                block = shape_card.frame_layout.itemAt(shape_card.frame_layout.count() - 1).widget()
+                form_layout = block.layout().itemAt(1) if block and block.layout() else None
+                saved_params = entry.get("params") or {}
+                if not isinstance(form_layout, QFormLayout) or not isinstance(saved_params, dict):
+                    continue
+                for row in range(form_layout.rowCount()):
+                    label = form_layout.itemAt(row, QFormLayout.LabelRole).widget()
+                    combo = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
+                    if label and combo and label.text() in saved_params:
+                        combo.setCurrentText(str(saved_params[label.text()]))
+
+        self.last_tool_type = previous_tool
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText(previous_label)
+
     def load_tool_panel(self, ui_class):
         self.last_tool_type = ui_class.__name__
-        print(f"[DEBUG] 🔄 Активирован инструмент: {self.last_tool_type}")
+        print(f"[DEBUG] Активирован инструмент: {self.last_tool_type}")
 
         tool_widget = QWidget()
         ui = ui_class()
@@ -638,7 +741,7 @@ class AIWindow(QMainWindow):
         shape_card = proxy.widget() if proxy else None
 
         if not shape_card:
-            print(f"[DEBUG] ❌ Не удалось получить ShapeCard для ID {selected_id}")
+            print(f"[DEBUG] [ERROR] Не удалось получить ShapeCard для ID {selected_id}")
             return
 
         tool_type = self.last_tool_type.lower().replace('ui_', '').replace('_tool', '')
@@ -646,27 +749,27 @@ class AIWindow(QMainWindow):
         is_sub = button_name.lower().startswith('sub_')
 
         if shape_card.tool_type and shape_card.tool_type != tool_type:
-            print(f"[DEBUG] ❌ Нельзя смешивать инструменты: {shape_card.tool_type} != {tool_type}")
+            print(f"[DEBUG] [ERROR] Нельзя смешивать инструменты: {shape_card.tool_type} != {tool_type}")
             return
 
         if not shape_card.tool_type:
             shape_card.tool_type = tool_type
-            print(f"[DEBUG] ✅ Назначен tool_type: {tool_type}")
+            print(f"[DEBUG] [OK] Назначен tool_type: {tool_type}")
 
         if is_main:
             if shape_card.main_function_added:
-                print(f"[DEBUG] ⚠ Главная функция уже добавлена в ShapeCard {selected_id}")
+                print(f"[DEBUG] [WARN] Главная функция уже добавлена в ShapeCard {selected_id}")
                 return
             shape_card.main_function_added = True
-            print(f"[DEBUG] ✅ Добавлена главная функция: {button_text}")
+            print(f"[DEBUG] [OK] Добавлена главная функция: {button_text}")
         elif is_sub:
             if button_name in shape_card.added_subfunctions:
-                print(f"[DEBUG] ⚠ Саб-функция уже добавлена: {button_text} ({button_name})")
+                print(f"[DEBUG] [WARN] Саб-функция уже добавлена: {button_text} ({button_name})")
                 return
             shape_card.added_subfunctions.add(button_name)
-            print(f"[DEBUG] ➕ Добавлена саб-функция: {button_text}")
+            print(f"[DEBUG] [ADD] Добавлена саб-функция: {button_text}")
         else:
-            print(f"[DEBUG] ❗ Неизвестный тип кнопки: {button_text} ({button_name})")
+            print(f"[DEBUG] [WARN] Неизвестный тип кнопки: {button_text} ({button_name})")
             return
 
         # Добавление параметров
@@ -675,7 +778,7 @@ class AIWindow(QMainWindow):
         label.setStyleSheet("color: white; font-weight: bold;")
         param_block.addWidget(label)
 
-        params = TOOL_PARAMETERS.get(button_name, [])
+        params = TOOL_PARAMETERS.get(f"{tool_type}:{button_name}", TOOL_PARAMETERS.get(button_name, []))
         from PySide6.QtWidgets import QFormLayout  # обязательно добавить в импорты
 
         form_layout = QFormLayout()
@@ -685,7 +788,7 @@ class AIWindow(QMainWindow):
         font = QFont()
         font.setPointSize(12)
         metrics = QFontMetrics(font)
-        max_width = max(metrics.horizontalAdvance(p) for p in params) + 10
+        max_width = max((metrics.horizontalAdvance(p) for p in params), default=0) + 10
 
         for param in params:
             label = QLabel(param)
@@ -710,6 +813,9 @@ class AIWindow(QMainWindow):
 
         wrapper = QWidget()
         wrapper.setLayout(param_block)
+        # Keep the stable UI object name. The visible label (for example
+        # "Campfire") does not contain the main_/sub_ prefix.
+        wrapper.setProperty("effect_key", button_name)
         wrapper.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 4px;")
 
         shape_card.frame_layout.addWidget(wrapper)
@@ -739,7 +845,8 @@ class AIWindow(QMainWindow):
                 if layout is None or layout.count() == 0:
                     continue
 
-                function_label = layout.itemAt(0).widget().text()  # название main/sub
+                function_label = layout.itemAt(0).widget().text()
+                function_key = str(block.property("effect_key") or function_label)
                 form_layout = layout.itemAt(1)
                 if not isinstance(form_layout, QFormLayout):
                     continue
@@ -751,10 +858,11 @@ class AIWindow(QMainWindow):
                     if label and combo and hasattr(combo, "selected"):
                         params[label.text()] = combo.selected
 
-                if "main_" in function_label.lower():
-                    shape_info["main"] = {"name": function_label, "params": params}
+                function_data = {"key": function_key, "name": function_label, "params": params}
+                if function_key.lower().startswith("main_"):
+                    shape_info["main"] = function_data
                 else:
-                    shape_info["sub"].append({"name": function_label, "params": params})
+                    shape_info["sub"].append(function_data)
 
             shape_cards_data.append(shape_info)
 
@@ -822,11 +930,11 @@ class AIWindow(QMainWindow):
             self.ui.pushButton.setEnabled(False)
         if hasattr(self.ui, "label_14"):
             self.ui.label_14.setText("render: отправка в backend...")
-    
+
         from backend_async import run_in_thread
         import backend_client
         import os
-    
+
         try:
             print(f"[DEBUG] backend_client={backend_client.__file__}")
             print(f"[DEBUG] BASE={getattr(backend_client,'BASE',None)}")
@@ -834,7 +942,7 @@ class AIWindow(QMainWindow):
             print(f"[DEBUG] out_mp4={out_mp4}")
         except Exception:
             pass
-    
+
         def _ok(res: object):
             job_id = res if isinstance(res, str) else (res.get("job_id") if isinstance(res, dict) else None)
             if not job_id:
@@ -846,7 +954,7 @@ class AIWindow(QMainWindow):
                     pass
                 QMessageBox.critical(self, "Render error", f"Backend вернул неожиданный ответ: {res}")
                 return
-    
+
             self._svd_job_id = str(job_id)
             if hasattr(self.ui, "label_14"):
                 self.ui.label_14.setText(f"render: queued ({self._svd_job_id})")
@@ -855,7 +963,7 @@ class AIWindow(QMainWindow):
             except Exception:
                 pass
             self._svd_timer.start(1000)
-    
+
         def _err(msg: str):
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
@@ -866,7 +974,7 @@ class AIWindow(QMainWindow):
             except Exception:
                 pass
             QMessageBox.critical(self, "Render error", str(msg))
-    
+
         run_in_thread(
             self,
             backend_client.start_svd_render,
@@ -884,9 +992,9 @@ class AIWindow(QMainWindow):
         job_id = getattr(self, "_svd_job_id", None)
         if not job_id:
             return
-    
+
         import backend_client
-    
+
         try:
             st = backend_client.get_svd_status(job_id, timeout=5.0)
         except Exception as e:
@@ -897,14 +1005,14 @@ class AIWindow(QMainWindow):
             except Exception:
                 pass
             return
-    
+
         state = st.get("state")
         prog = st.get("progress") or {}
         stage = prog.get("stage")
-    
+
         if hasattr(self.ui, "label_14"):
             self.ui.label_14.setText(f"render: {state} ({stage})")
-    
+
         if state == "done":
             self._svd_timer.stop()
             if hasattr(self.ui, "pushButton"):
@@ -918,7 +1026,7 @@ class AIWindow(QMainWindow):
                 pass
             QMessageBox.information(self, "Render", f"Saved:\n{out_win or out_wsl}")
             return
-    
+
         if state == "error":
             self._svd_timer.stop()
             if hasattr(self.ui, "pushButton"):

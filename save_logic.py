@@ -151,10 +151,11 @@ def save_outputs(self):
             painter_clear.end()
 
         if item_type == "Polygon":
+            scene_polygon = item.mapToScene(item.polygon())
             shape_data.append({
                 "id": shape_id,
                 "type": "Polygon",
-                "points": [{"x": int(p.x()), "y": int(p.y())} for p in item.polygon()],
+                "points": [{"x": int(p.x()), "y": int(p.y())} for p in scene_polygon],
                 "color": brush_color,
                 "parent_id": self.shape_parents.get(shape_id)
             })
@@ -285,10 +286,11 @@ def save_outputs(self):
         painter_clear.end()
 
         if item_type == "Polygon":
+            scene_polygon = item.mapToScene(item.polygon())
             shape_data.append({
                 "id": shape_id,
                 "type": "Polygon",
-                "points": [{"x": int(p.x()), "y": int(p.y())} for p in item.polygon()],
+                "points": [{"x": int(p.x()), "y": int(p.y())} for p in scene_polygon],
                 "color": brush_color,
                 "parent_id": self.shape_parents.get(shape_id)
             })
@@ -338,6 +340,9 @@ def save_outputs(self):
             'shape_cards': shape_cards_data
         }, f, indent=4)
 
+    self.current_project_folder = folder
+    self.current_shapes_json_path = os.path.join(folder, "shapes.json")
+
     # Передаём пути в AI panel, чтобы render работал без диалогов
     if hasattr(self, "ai_window"):
         try:
@@ -351,4 +356,3 @@ def save_outputs(self):
             pass
 
     print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
-

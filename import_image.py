@@ -11,5 +11,13 @@ def import_image(self):
         pixmap_item = QGraphicsPixmapItem(pixmap)
         pixmap_item.setData(Qt.UserRole, file_path)  # ✅ Сохраняем путь
         self.scene.clear()
+        self.shape_registry.clear()
+        self.shape_parents.clear()
+        self.shape_id_counter = 1
+        self.ui.listWidget.clear()
+        self.current_project_folder = None
+        self.current_shapes_json_path = None
+        if hasattr(self, "ai_window"):
+            self.ai_window.reset_project_state()
         self.scene.addItem(pixmap_item)              # ✅ Добавляем именно этот объект
         self.ui.graphicsView.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
