@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "waterfall",
+  "effect_type": "water",
+  "label": "Waterfall",
+  "editor_key": "main_waterfall",
+  "aliases": ["waterfall"],
+  "controls": ["intensity", "power", "grain", "opacity", "randomness"],
+  "params": {
+    "strength": 6.0,
+    "wavelength": 38.0,
+    "secondary_wavelength": 24.0,
+    "opacity": 0.75
+  }
+}

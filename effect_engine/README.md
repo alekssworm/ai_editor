@@ -11,16 +11,37 @@ The default preparation providers are lightweight deterministic fallbacks. SAM/D
 Prepare a water layer from the current `shapes.json` format:
 
 ```powershell
-python -m effect_engine prepare --project path\to\shapes.json --shape-id 1 --direction 1,0 --seed 42
+python -m effect_engine prepare --project path\to\shapes.json --shape-id 1 --preset river --direction 1,0 --seed 42
 ```
 
 Render a three-second loop:
 
 ```powershell
-python -m effect_engine render --project path\to\shapes.json --assets path\to\effect_assets\shape_1 --output result.mp4 --frames 72 --fps 24
+python -m effect_engine render --project path\to\shapes.json --assets path\to\effect_assets\shape_1 --preset river --output result.mp4 --frames 72 --fps 24
 ```
 
 The renderer samples `t = frame_index / frame_count`; it never writes a duplicate final frame. Internally every animation phase uses periodic functions and normalizes `t` with modulo, so the state immediately after the last frame is exactly the state at `t=0`.
+
+## Presets
+
+Renderer defaults are stored as versioned JSON files under
+`effect_engine/presets/<effect_type>`. List installed presets with:
+
+```powershell
+python -m effect_engine presets --effect water
+```
+
+Each preset defines a stable `id`, effect type, editor key and numeric renderer
+parameters. The editor saves `preset_id` in its shape card, and prepared assets
+copy both `preset_id` and the resolved renderer parameters into `manifest.json`.
+Old projects without `preset_id` remain compatible: keys such as `main_river`
+are registered as aliases. Parameter precedence is preset, then card settings,
+then explicit CLI overrides.
+
+Water preset JSON files may also define a `controls` array. A new preset with a
+unique `editor_key` is added to the water panel automatically; no generated Qt
+file needs to be edited. `fast_river.json` is included as an example of a second
+motion preset that uses the same water renderer.
 
 ## Editor preview
 

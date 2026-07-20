@@ -667,6 +667,21 @@ class AIWindow(QMainWindow):
             entries = []
             if isinstance(card_data.get("main"), dict):
                 entries.append(card_data["main"])
+            elif card_data.get("preset_id"):
+                try:
+                    from effect_engine.preset_registry import resolve_card_preset
+
+                    preset = resolve_card_preset(card_data, tool_type)
+                except (KeyError, ValueError):
+                    preset = None
+                if preset is not None and preset.editor_key:
+                    entries.append(
+                        {
+                            "key": preset.editor_key,
+                            "name": preset.label,
+                            "params": {},
+                        }
+                    )
             entries.extend(entry for entry in card_data.get("sub", []) if isinstance(entry, dict))
 
             self.last_tool_type = f"Ui_{tool_type}_tool"
@@ -709,13 +724,33 @@ class AIWindow(QMainWindow):
         ui = ui_class()
         ui.setupUi(tool_widget)
 
+        if ui_class is Ui_water_tool:
+            from effect_engine.preset_registry import default_preset_registry
+
+            existing_keys = {
+                button.objectName().casefold()
+                for button in tool_widget.findChildren(QPushButton)
+            }
+            for preset in default_preset_registry().list("water"):
+                editor_key = preset.editor_key or f"main_{preset.preset_id}"
+                if editor_key.casefold() in existing_keys:
+                    continue
+                button = QPushButton(preset.label, ui.splitter_347)
+                button.setObjectName(editor_key)
+                ui.splitter_347.addWidget(button)
+                existing_keys.add(editor_key.casefold())
+
         buttons = tool_widget.findChildren(QPushButton)
         print(f"[DEBUG] Найдено {len(buttons)} кнопок в {ui_class.__name__}")
 
         for btn in buttons:
             btn_text = btn.text().strip()
             btn_name = btn.objectName().strip()
-            if btn_text and btn_name.lower() not in ["x", "color"]:
+            if (
+                btn_text
+                and btn_text.casefold() not in {"x", "color"}
+                and btn_name.casefold() not in {"x", "color"}
+            ):
                 btn.clicked.connect(lambda _, text=btn_text, name=btn_name: self.add_button_name_to_shape_card(text, name))
                 print(f"[DEBUG] Привязан обработчик к кнопке: {btn_text} ({btn_name})")
 
@@ -779,6 +814,14 @@ class AIWindow(QMainWindow):
         param_block.addWidget(label)
 
         params = TOOL_PARAMETERS.get(f"{tool_type}:{button_name}", TOOL_PARAMETERS.get(button_name, []))
+        if is_main and not params:
+            try:
+                from effect_engine.preset_registry import default_preset_registry
+
+                preset = default_preset_registry().resolve(tool_type, button_name)
+                params = list(preset.controls)
+            except KeyError:
+                pass
         from PySide6.QtWidgets import QFormLayout  # обязательно добавить в импорты
 
         form_layout = QFormLayout()
@@ -864,6 +907,14 @@ class AIWindow(QMainWindow):
                 else:
                     shape_info["sub"].append(function_data)
 
+            try:
+                from effect_engine.preset_registry import preset_id_from_card
+
+                preset_id = preset_id_from_card(shape_info, shape_card.tool_type)
+            except (KeyError, ValueError):
+                preset_id = None
+            if preset_id is not None:
+                shape_info["preset_id"] = preset_id
             shape_cards_data.append(shape_info)
 
         return shape_cards_data

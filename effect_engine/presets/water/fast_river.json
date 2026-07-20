@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "fast_river",
+  "effect_type": "water",
+  "label": "Fast river",
+  "editor_key": "main_fast_river",
+  "aliases": ["rapid river"],
+  "controls": ["intensity", "randomness", "opacity", "viscosity"],
+  "params": {
+    "strength": 7.5,
+    "wavelength": 48.0,
+    "secondary_wavelength": 22.0,
+    "opacity": 0.85
+  }
+}

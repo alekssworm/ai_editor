@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "still_water",
+  "effect_type": "water",
+  "label": "Still water",
+  "editor_key": "main_Still_water",
+  "aliases": ["still water", "calm_lake"],
+  "controls": ["opacity", "transparency", "reflections", "grain"],
+  "params": {
+    "strength": 2.0,
+    "wavelength": 92.0,
+    "secondary_wavelength": 58.0,
+    "opacity": 0.75
+  }
+}

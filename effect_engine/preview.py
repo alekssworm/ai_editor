@@ -8,35 +8,10 @@ import numpy as np
 from PIL import Image
 
 from .models import EffectAssets
+from .parameters import renderer_params_from_card
+from .preset_registry import resolve_card_preset
 from .project import find_shape_card, load_project, prepare_project_shape, resolve_background_path
 from .renderer import DeterministicEffectEngine
-
-
-_LEVELS = {
-    "default": 1.0,
-    "low": 0.65,
-    "weak": 0.65,
-    "normal": 1.0,
-    "medium": 1.0,
-    "high": 1.45,
-    "strong": 1.45,
-}
-
-_OPACITY_LEVELS = {
-    "default": 0.75,
-    "low": 0.45,
-    "weak": 0.45,
-    "normal": 0.75,
-    "medium": 0.75,
-    "high": 1.0,
-    "strong": 1.0,
-}
-
-_WATER_VARIANTS: dict[str, dict[str, float]] = {
-    "main_waterfall": {"strength": 6.0, "wavelength": 38.0, "secondary_wavelength": 24.0},
-    "main_river": {"strength": 4.5, "wavelength": 64.0, "secondary_wavelength": 34.0},
-    "main_still_water": {"strength": 2.0, "wavelength": 92.0, "secondary_wavelength": 58.0},
-}
 
 
 @dataclass(slots=True)
@@ -47,37 +22,7 @@ class PreviewResult:
     shape_id: int
     fps: int
     params: dict[str, float]
-
-
-def _main_effect(card: Mapping[str, Any] | None) -> tuple[str, dict[str, Any]]:
-    main = (card or {}).get("main") or {}
-    if not isinstance(main, Mapping):
-        return "", {}
-    key = str(main.get("key") or "").strip().lower()
-    params = main.get("params") or {}
-    return key, dict(params) if isinstance(params, Mapping) else {}
-
-
-def _level(value: Any, values: Mapping[str, float], default: float) -> float:
-    return float(values.get(str(value or "default").strip().lower(), default))
-
-
-def renderer_params_from_card(card: Mapping[str, Any] | None) -> dict[str, float]:
-    """Translate the editor's qualitative water settings into renderer values."""
-    variant, values = _main_effect(card)
-    result = dict(_WATER_VARIANTS.get(variant, _WATER_VARIANTS["main_river"]))
-
-    intensity = _level(values.get("intensity"), _LEVELS, 1.0)
-    power = _level(values.get("power"), _LEVELS, 1.0)
-    result["strength"] *= intensity * power
-    result["opacity"] = _level(values.get("opacity"), _OPACITY_LEVELS, 0.75)
-
-    randomness = _level(values.get("randomness"), _LEVELS, 1.0)
-    result["secondary_wavelength"] /= max(0.5, randomness)
-
-    viscosity = _level(values.get("viscosity"), _LEVELS, 1.0)
-    result["wavelength"] *= viscosity
-    return result
+    preset_id: str | None = None
 
 
 def fit_size(size: tuple[int, int], max_dimension: int) -> tuple[int, int]:
@@ -150,11 +95,14 @@ def build_project_preview(
     effect_type = str(card.get("tool_type") or "water").strip().lower()
     if effect_type != "water":
         raise ValueError("Deterministic preview currently supports only the water tool")
+    preset = resolve_card_preset(card, effect_type)
 
     assets, assets_dir = prepare_project_shape(
         path,
         shape_id,
         effect_type=effect_type,
+        preset_id=preset.preset_id if preset is not None else None,
+        card_override=card,
         seed=seed,
         direction=direction_override,
     )
@@ -180,4 +128,5 @@ def build_project_preview(
         shape_id=int(shape_id),
         fps=int(fps),
         params=params,
+        preset_id=preset.preset_id if preset is not None else None,
     )

@@ -8,10 +8,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from effect_engine.cli import resolve_render_params
 from effect_engine.models import EffectAssets
 from effect_engine.preparation import PreparationPipeline
 from effect_engine.preview import build_project_preview, renderer_params_from_card
+from effect_engine.preset_registry import PresetRegistry, default_preset_registry
 from effect_engine.project import (
+    load_project,
     normalize_direction,
     prepare_project_shape,
     project_flow_direction,
@@ -119,6 +122,8 @@ class EffectEngineTests(unittest.TestCase):
 
             self.assertEqual(assets.effect_type, "water")
             self.assertEqual(assets.metadata["shape_id"], 7)
+            self.assertEqual(assets.metadata["preset_id"], "river")
+            self.assertEqual(assets.metadata["renderer_params"]["strength"], 4.5)
             self.assertTrue((target / "manifest.json").exists())
             self.assertGreater(float(assets.mask.max()), 0.9)
             np.testing.assert_allclose(assets.flow[..., 0], 0.0)
@@ -155,6 +160,73 @@ class EffectEngineTests(unittest.TestCase):
         self.assertAlmostEqual(params["strength"], 8.7)
         self.assertAlmostEqual(params["opacity"], 0.45)
         self.assertLess(params["secondary_wavelength"], 24.0)
+
+    def test_builtin_presets_support_ids_aliases_and_defaults(self) -> None:
+        registry = default_preset_registry()
+
+        self.assertEqual(registry.resolve("water").preset_id, "river")
+        self.assertEqual(registry.resolve("water", "main_waterfall").preset_id, "waterfall")
+        self.assertEqual(registry.resolve("water", "main_Still_water").preset_id, "still_water")
+        self.assertEqual(
+            [preset.preset_id for preset in registry.list("water")],
+            ["fast_river", "river", "still_water", "waterfall"],
+        )
+
+        explicit_card = {
+            "tool_type": "water",
+            "preset_id": "still_water",
+            "main": {"key": "main_waterfall", "params": {}},
+        }
+        self.assertEqual(renderer_params_from_card(explicit_card)["strength"], 2.0)
+
+    def test_preset_registry_rejects_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "broken",
+                        "effect_type": "water",
+                        "label": "Broken",
+                        "params": {"strength": "very"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not numeric"):
+                PresetRegistry.from_directory(directory)
+
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "no_default",
+                        "effect_type": "water",
+                        "label": "No default",
+                        "params": {"strength": 2.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "Missing default preset"):
+                PresetRegistry.from_directory(directory)
+
+    def test_cli_render_uses_asset_preset_and_explicit_overrides(self) -> None:
+        assets = self.prepare()
+        assets.metadata["preset_id"] = "waterfall"
+        assets.metadata["renderer_params"] = {"strength": 8.0, "opacity": 0.6}
+
+        self.assertEqual(resolve_render_params(assets)["strength"], 8.0)
+        river = resolve_render_params(assets, preset_id="river")
+        self.assertEqual(river["strength"], 4.5)
+        overridden = resolve_render_params(assets, preset_id="river", opacity=0.25)
+        self.assertEqual(overridden["opacity"], 0.25)
+
+    def test_future_project_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shapes.json"
+            path.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsupported project schema_version"):
+                load_project(path)
 
     def test_project_preview_keeps_full_assets_and_downscales_frames(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -204,6 +276,8 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(stored.size, self.image.size)
             self.assertEqual(stored.seed, 17)
             self.assertEqual(result.params["opacity"], 1.0)
+            self.assertEqual(result.preset_id, "river")
+            self.assertEqual(stored.metadata["preset_id"], "river")
             np.testing.assert_allclose(stored.flow[..., 0], 0.0)
             np.testing.assert_allclose(stored.flow[..., 1], -1.0)
             self.assertEqual(stored.metadata["direction"], [0.0, -1.0])

@@ -2,28 +2,31 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPolygonF
 
 from draw_tools import SelectablePolygonItem
-from effect_engine.project import project_flow_direction
+from effect_engine.project import load_project, project_flow_direction
 
 
 def load_scene(self):
     from draw_tools import ResizableRectItem, SelectableCircleItem
     from obj_list_logic import add_shape_to_list
-    from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem
+    from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem, QMessageBox
     from PySide6.QtGui import QColor, QPixmap
     from PySide6.QtCore import QRectF, Qt
-    import json, os
+    import os
 
     # 1. Выбор файла
     file_path, _ = QFileDialog.getOpenFileName(self, "Загрузить shapes.json", "", "JSON файлы (*.json)")
     if not file_path:
         return
 
-    # запомним путь для AI render
-    self.current_shapes_json_path = file_path
-
     # 2. Загрузка JSON
-    with open(file_path, "r", encoding="utf-8") as f:
-        full_data = json.load(f)
+    try:
+        _, full_data = load_project(file_path)
+    except (OSError, ValueError) as error:
+        QMessageBox.critical(self, "Project error", str(error))
+        return
+
+    # запомним путь для AI render только после успешной проверки
+    self.current_shapes_json_path = file_path
 
     shapes = full_data.get("shapes", [])
     bg_path = full_data.get("background", "")

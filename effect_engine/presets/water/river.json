@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "river",
+  "effect_type": "water",
+  "label": "River",
+  "editor_key": "main_river",
+  "aliases": ["river"],
+  "controls": ["intensity", "randomness", "opacity", "viscosity"],
+  "default": true,
+  "params": {
+    "strength": 4.5,
+    "wavelength": 64.0,
+    "secondary_wavelength": 34.0,
+    "opacity": 0.75
+  }
+}

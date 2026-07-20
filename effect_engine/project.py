@@ -7,9 +7,14 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from PIL import Image, ImageDraw
 
+from .parameters import renderer_params_from_card
+from .preset_registry import resolve_card_preset
 from .models import EffectAssets
 from .preparation import PreparationPipeline
 from .storage import EffectAssetStore
+
+
+PROJECT_SCHEMA_VERSION = 2
 
 
 def normalize_direction(value: Any) -> tuple[float, float] | None:
@@ -73,7 +78,16 @@ def serialize_flow_directions(
 
 def load_project(project_path: str | Path) -> tuple[Path, dict[str, Any]]:
     path = Path(project_path).resolve()
-    return path, json.loads(path.read_text(encoding="utf-8"))
+    project = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(project, dict):
+        raise ValueError("Project root must be a JSON object")
+    try:
+        schema_version = int(project.get("schema_version", 1))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid project schema_version") from error
+    if schema_version < 1 or schema_version > PROJECT_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported project schema_version: {schema_version}")
+    return path, project
 
 
 def resolve_background_path(project_path: Path, project: dict[str, Any]) -> Path:
@@ -132,8 +146,10 @@ def prepare_project_shape(
     *,
     output_dir: str | Path | None = None,
     effect_type: str | None = None,
+    preset_id: str | None = None,
     seed: int = 1,
     direction: tuple[float, float] | None = None,
+    card_override: Mapping[str, Any] | None = None,
     pipeline: PreparationPipeline | None = None,
 ) -> tuple[EffectAssets, Path]:
     path, project = load_project(project_path)
@@ -149,8 +165,18 @@ def prepare_project_shape(
     with Image.open(background_path) as source:
         image = source.convert("RGB")
     rough_mask = mask_from_shape(shape, image.size)
-    card = find_shape_card(project, requested_id)
+    card = (
+        dict(card_override)
+        if card_override is not None
+        else find_shape_card(project, requested_id)
+    )
     resolved_effect = str(effect_type or card.get("tool_type") or "water").lower()
+    preset = resolve_card_preset(card, resolved_effect, preset_id=preset_id)
+    renderer_params = renderer_params_from_card(
+        card,
+        effect_type=resolved_effect,
+        preset_id=preset.preset_id if preset is not None else None,
+    )
     target = Path(output_dir) if output_dir else path.parent / "effect_assets" / f"shape_{requested_id}"
 
     resolved_direction = normalize_direction(direction)
@@ -168,6 +194,8 @@ def prepare_project_shape(
             "project": path.name,
             "shape_id": requested_id,
             "background": background_path.name,
+            **({"preset_id": preset.preset_id} if preset is not None else {}),
+            **({"renderer_params": renderer_params} if renderer_params else {}),
         },
     )
     EffectAssetStore.save(assets, target)

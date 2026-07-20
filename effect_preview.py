@@ -47,7 +47,8 @@ class EffectPreviewDialog(QDialog):
         self.preview_label.setStyleSheet("background: #151515; border: 1px solid #444;")
 
         self.status_label = QLabel(
-            f"{result.effect_type} · {len(result.frames)} frames · {result.fps} fps"
+            f"{result.effect_type}/{result.preset_id or 'default'} · "
+            f"{len(result.frames)} frames · {result.fps} fps"
         )
         self.status_label.setToolTip(str(result.assets_dir))
 

@@ -11,7 +11,7 @@ from PIL import Image
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from draw_tools import ResizableRectItem
 from effect_engine.preview import PreviewResult
@@ -50,6 +50,48 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
         window = MainWindow()
         self.assertEqual(window.ui.preview_button.text(), "preview")
+        window.close()
+
+    def test_preset_only_card_is_restored_and_serialized(self) -> None:
+        from editor import MainWindow
+
+        window = MainWindow()
+        window.ai_window.add_shape_card(22, "Rectangle", "#00aaff")
+        window.ai_window.restore_shape_cards_data(
+            [
+                {
+                    "id": 22,
+                    "tool_type": "water",
+                    "preset_id": "still_water",
+                    "main": None,
+                    "sub": [],
+                }
+            ]
+        )
+
+        card = window.ai_window.collect_shape_cards_data()[0]
+        self.assertEqual(card["preset_id"], "still_water")
+        self.assertEqual(card["main"]["key"], "main_Still_water")
+        window.close()
+
+    def test_json_only_preset_is_added_to_water_panel(self) -> None:
+        from editor import MainWindow
+        from ui_water_tool import Ui_water_tool
+
+        window = MainWindow()
+        window.ai_window.add_shape_card(23, "Rectangle", "#00aaff")
+        window.ai_window.ui.label_14.setText("23")
+        window.ai_window.load_tool_panel(Ui_water_tool)
+        tool_widget = window.ai_window.tool_container_layout.itemAt(
+            window.ai_window.tool_container_layout.count() - 1
+        ).widget()
+        button = tool_widget.findChild(QPushButton, "main_fast_river")
+
+        self.assertIsNotNone(button)
+        button.click()
+        card = window.ai_window.collect_shape_cards_data()[0]
+        self.assertEqual(card["preset_id"], "fast_river")
+        self.assertEqual(card["main"]["params"]["intensity"], "default")
         window.close()
 
     def test_flow_direction_drag_is_normalized_and_stored(self) -> None:
