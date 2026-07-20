@@ -542,8 +542,8 @@ class ShapeCardGraphicsWidget(QGraphicsWidget):
 
     def mousePressEvent(self, event):
         self.setSelected(True)
-        if self.parent_window and hasattr(self.parent_window.ui, "label_14"):
-            self.parent_window.ui.label_14.setText(str(self.shape_id))
+        if self.parent_window:
+            self.parent_window.select_shape_card(self.shape_id)
         super().mousePressEvent(event)
 
 
@@ -552,6 +552,12 @@ class AIWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.selected_shape_id = None
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setText("AI render (WSL)")
+            self.ui.pushButton.setToolTip(
+                "Stable Video Diffusion render; requires backend_server.py in WSL"
+            )
 
         self.scene = QGraphicsScene(self)
         self.ui.graphicsView.setRenderHint(QPainter.Antialiasing)
@@ -578,6 +584,8 @@ class AIWindow(QMainWindow):
         self._render_worker = None
 
         self._svd_job_id = None
+        self._svd_poll_in_flight = False
+        self._svd_status_failures = 0
         self._svd_timer = QTimer(self)
         self._svd_timer.timeout.connect(self._poll_svd_status)
 
@@ -598,11 +606,20 @@ class AIWindow(QMainWindow):
 
         print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
 
+    def select_shape_card(self, shape_id) -> None:
+        self.selected_shape_id = int(shape_id)
+        if hasattr(self.ui, "label_14"):
+            self.ui.label_14.setText(str(self.selected_shape_id))
+
+    def _set_render_status(self, text: str, timeout: int = 0) -> None:
+        self.statusBar().showMessage(str(text), int(timeout))
+
     def clear_shape_cards(self):
         """Reset cards when a new image or project replaces the current scene."""
         self.scene.clear()
         self.shape_cards.clear()
         self.last_tool_type = None
+        self.selected_shape_id = None
         if hasattr(self.ui, "label_14"):
             self.ui.label_14.clear()
 
@@ -613,12 +630,18 @@ class AIWindow(QMainWindow):
         self.render_pieces_dir = None
         self.render_out_mp4_path = None
         self._svd_job_id = None
+        self._svd_poll_in_flight = False
+        self._svd_status_failures = 0
         self._svd_timer.stop()
 
     def remove_shape_card(self, shape_id):
         widget = self.shape_cards.pop(shape_id, None)
         if widget is not None and widget.scene() is self.scene:
             self.scene.removeItem(widget)
+        if self.selected_shape_id == int(shape_id):
+            self.selected_shape_id = None
+            if hasattr(self.ui, "label_14"):
+                self.ui.label_14.clear()
 
     @staticmethod
     def _normalize_effect_name(value):
@@ -645,7 +668,7 @@ class AIWindow(QMainWindow):
             return
 
         previous_tool = self.last_tool_type
-        previous_label = self.ui.label_14.text() if hasattr(self.ui, "label_14") else ""
+        previous_selected_id = self.selected_shape_id
 
         for card_data in cards:
             if not isinstance(card_data, dict):
@@ -685,7 +708,7 @@ class AIWindow(QMainWindow):
             entries.extend(entry for entry in card_data.get("sub", []) if isinstance(entry, dict))
 
             self.last_tool_type = f"Ui_{tool_type}_tool"
-            self.ui.label_14.setText(str(shape_id))
+            self.select_shape_card(shape_id)
             for entry in entries:
                 display_name = str(entry.get("name") or "").strip()
                 effect_key = str(entry.get("key") or "").strip()
@@ -713,8 +736,12 @@ class AIWindow(QMainWindow):
                         combo.setCurrentText(str(saved_params[label.text()]))
 
         self.last_tool_type = previous_tool
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText(previous_label)
+        if previous_selected_id is None:
+            self.selected_shape_id = None
+            if hasattr(self.ui, "label_14"):
+                self.ui.label_14.clear()
+        else:
+            self.select_shape_card(previous_selected_id)
 
     def load_tool_panel(self, ui_class):
         self.last_tool_type = ui_class.__name__
@@ -761,12 +788,11 @@ class AIWindow(QMainWindow):
 
     def add_button_name_to_shape_card(self, button_text, button_name):
         print(f"[DEBUG] Нажата кнопка: {button_text} ({button_name})")
-        try:
-            selected_id = int(self.ui.label_14.text().strip())
-            print(f"[DEBUG] ShapeCard ID из label_14: {selected_id}")
-        except ValueError:
-            print("[DEBUG] label_14 пустой или некорректный")
+        selected_id = self.selected_shape_id
+        if selected_id is None:
+            print("[DEBUG] ShapeCard не выбран")
             return
+        print(f"[DEBUG] Выбран ShapeCard ID: {selected_id}")
 
         if selected_id not in self.shape_cards:
             print(f"[DEBUG] ShapeCard с ID {selected_id} не найден")
@@ -948,6 +974,13 @@ class AIWindow(QMainWindow):
             if not shapes_json:
                 return
             self.render_shapes_json_path = shapes_json
+        if not os.path.isfile(shapes_json):
+            QMessageBox.critical(
+                self,
+                "Project error",
+                f"Файл проекта не найден:\n{shapes_json}",
+            )
+            return
 
         base_dir = os.path.dirname(shapes_json)
 
@@ -977,10 +1010,12 @@ class AIWindow(QMainWindow):
     # ---------------------------
     def _start_remote_render(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
         """Стартуем SVD-рендер на backend (WSL) и начинаем опрос статуса."""
+        if self._svd_job_id:
+            QMessageBox.information(self, "AI render", "AI render уже выполняется.")
+            return
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(False)
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText("render: отправка в backend...")
+        self._set_render_status("AI render: проверка WSL backend...")
 
         from backend_async import run_in_thread
         import backend_client
@@ -1003,12 +1038,14 @@ class AIWindow(QMainWindow):
                     print(f"[DEBUG] [RENDER] unexpected response: {res}")
                 except Exception:
                     pass
+                self._set_render_status("AI render: некорректный ответ", 8000)
                 QMessageBox.critical(self, "Render error", f"Backend вернул неожиданный ответ: {res}")
                 return
 
             self._svd_job_id = str(job_id)
-            if hasattr(self.ui, "label_14"):
-                self.ui.label_14.setText(f"render: queued ({self._svd_job_id})")
+            self._svd_status_failures = 0
+            self._svd_poll_in_flight = False
+            self._set_render_status(f"AI render: queued ({self._svd_job_id})")
             try:
                 print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
             except Exception:
@@ -1018,17 +1055,17 @@ class AIWindow(QMainWindow):
         def _err(msg: str):
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
-            if hasattr(self.ui, "label_14"):
-                self.ui.label_14.setText("render: error")
+            self._svd_job_id = None
+            self._set_render_status("AI render: backend недоступен", 8000)
             try:
                 print(f"[DEBUG] [RENDER] error: {msg}")
             except Exception:
                 pass
-            QMessageBox.critical(self, "Render error", str(msg))
+            QMessageBox.warning(self, "AI backend недоступен", str(msg))
 
         run_in_thread(
             self,
-            backend_client.start_svd_render,
+            backend_client.start_svd_render_checked,
             _ok,
             _err,
             shapes_json,
@@ -1039,61 +1076,101 @@ class AIWindow(QMainWindow):
         )
 
     def _poll_svd_status(self):
-        """Опрос статуса job_id и обновление UI."""
+        """Poll status outside the UI thread so a slow backend cannot freeze Qt."""
         job_id = getattr(self, "_svd_job_id", None)
-        if not job_id:
+        if not job_id or self._svd_poll_in_flight:
             return
 
+        from backend_async import run_in_thread
         import backend_client
 
-        try:
-            st = backend_client.get_svd_status(job_id, timeout=5.0)
-        except Exception as e:
-            if hasattr(self.ui, "label_14"):
-                self.ui.label_14.setText(f"render: status error ({e})")
-            try:
-                print(f"[DEBUG] [RENDER] status error: {e}")
-            except Exception:
-                pass
+        self._svd_poll_in_flight = True
+
+        def on_status(status: object) -> None:
+            self._svd_poll_in_flight = False
+            if self._svd_job_id != job_id:
+                return
+            if not isinstance(status, dict):
+                self._on_svd_status_error("Backend вернул некорректный статус")
+                return
+            self._handle_svd_status(status)
+
+        def on_error(message: str) -> None:
+            self._svd_poll_in_flight = False
+            if self._svd_job_id == job_id:
+                self._on_svd_status_error(message)
+
+        run_in_thread(
+            self,
+            backend_client.get_svd_status,
+            on_status,
+            on_error,
+            job_id,
+            timeout=3.0,
+        )
+
+    def _on_svd_status_error(self, message: str) -> None:
+        self._svd_status_failures += 1
+        failure_limit = 3
+        print(
+            f"[DEBUG] [RENDER] status error "
+            f"{self._svd_status_failures}/{failure_limit}: {message}"
+        )
+        if self._svd_status_failures < failure_limit:
+            self._set_render_status(
+                f"AI render: потеряна связь, повтор "
+                f"{self._svd_status_failures}/{failure_limit}"
+            )
             return
 
-        state = st.get("state")
-        prog = st.get("progress") or {}
-        stage = prog.get("stage")
+        self._svd_timer.stop()
+        self._svd_job_id = None
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(True)
+        self._set_render_status("AI render: соединение потеряно", 8000)
+        QMessageBox.warning(self, "AI render", str(message))
 
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText(f"render: {state} ({stage})")
+    def _handle_svd_status(self, status: dict) -> None:
+        self._svd_status_failures = 0
+        state = str(status.get("state") or "unknown")
+        prog = status.get("progress") or {}
+        stage = prog.get("stage")
+        stage_suffix = f" ({stage})" if stage else ""
+        self._set_render_status(f"AI render: {state}{stage_suffix}")
 
         if state == "done":
             self._svd_timer.stop()
+            self._svd_job_id = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
-            result = st.get("result") or {}
+            result = status.get("result") or {}
             out_win = result.get("out_mp4_win") or result.get("out_mp4") or ""
             out_wsl = result.get("out_mp4_wsl") or ""
             try:
                 print(f"[DEBUG] [RENDER] done out_win={out_win} out_wsl={out_wsl}")
             except Exception:
                 pass
+            self._set_render_status("AI render: готово", 8000)
             QMessageBox.information(self, "Render", f"Saved:\n{out_win or out_wsl}")
             return
 
         if state == "error":
             self._svd_timer.stop()
+            self._svd_job_id = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
-            err = st.get("error") or "unknown error"
+            err = status.get("error") or "unknown error"
             try:
                 print(f"[DEBUG] [RENDER] error state: {err}")
             except Exception:
                 pass
+            self._set_render_status("AI render: ошибка", 8000)
             QMessageBox.critical(self, "Render error", str(err))
 
     def _start_render_thread(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(False)
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText("render: starting...")
+        self._set_render_status("render: starting...")
 
         self._render_thread = QThread(self)
         self._render_worker = RenderWorker(shapes_json, out_mp4, masks_dir, pieces_dir)
@@ -1111,19 +1188,16 @@ class AIWindow(QMainWindow):
         self._render_thread.start()
 
     def _on_render_progress(self, text: str):
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText("render: " + text)
+        self._set_render_status("render: " + text)
 
     def _on_render_finished(self, out_path: str):
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText("render: done")
+        self._set_render_status("render: done", 8000)
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(True)
         QMessageBox.information(self, "Render", f"Saved: {out_path}")
 
     def _on_render_error(self, msg: str):
-        if hasattr(self.ui, "label_14"):
-            self.ui.label_14.setText("render: error")
+        self._set_render_status("render: error", 8000)
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(True)
         QMessageBox.critical(self, "Render error", msg)

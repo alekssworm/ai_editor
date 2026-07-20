@@ -800,9 +800,25 @@ async def log_requests(request: Request, call_next):
 # -----------------------
 # Routes
 # -----------------------
+@app.get("/")
+def root():
+    return {
+        "service": "ai_editor backend",
+        "ok": True,
+        "health": "/health",
+        "gpu": "/gpu",
+        "render": "/svd/render",
+    }
+
+
 @app.get("/health")
 def health():
-    return {"ok": True, "ts": _now()}
+    return {
+        "ok": True,
+        "service": "ai_editor backend",
+        "version": app.version,
+        "ts": _now(),
+    }
 
 
 @app.get("/gpu")

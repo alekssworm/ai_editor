@@ -78,6 +78,10 @@ class MainWindow(QMainWindow):
         self.ui.Circle.clicked.connect(lambda: activate_circle_mode(self))
         self.ui.save_button.clicked.connect(lambda: save_outputs(self))
         self.ui.Resizable_button.clicked.connect(lambda: show_all_handles(self))
+        self.ui.preview_button.setText("Local preview")
+        self.ui.preview_button.setToolTip(
+            "Deterministic preview; runs locally without AI backend"
+        )
         self.ui.preview_button.clicked.connect(lambda: start_effect_preview(self))
 
         # Подключение селектора
