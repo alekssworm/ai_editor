@@ -175,6 +175,44 @@ def _round_to_multiple(x: int, m: int = 64) -> int:
     return int(math.ceil(x / m) * m)
 
 
+def _mean_edge_color(pil_image_rgb) -> tuple[int, int, int]:
+    """Return mean RGB from all four edges for rectangular images."""
+    import numpy as np
+
+    arr = np.array(pil_image_rgb.convert("RGB"), dtype=np.uint8)
+    edge_pixels = np.concatenate(
+        [
+            arr[0, :, :],
+            arr[-1, :, :],
+            arr[:, 0, :],
+            arr[:, -1, :],
+        ],
+        axis=0,
+    )
+    return tuple(int(value) for value in edge_pixels.mean(axis=0))
+
+
+def _letterbox_for_svd(pil_image_rgb, size: tuple[int, int] = (1024, 576)):
+    """Fit an image into SVD's landscape canvas without stretching it."""
+    from PIL import Image
+
+    source = pil_image_rgb.convert("RGB")
+    source_w, source_h = source.size
+    target_w, target_h = map(int, size)
+    scale = min(target_w / source_w, target_h / source_h)
+    fitted_w = max(1, min(target_w, round(source_w * scale)))
+    fitted_h = max(1, min(target_h, round(source_h * scale)))
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    fitted = source.resize((fitted_w, fitted_h), resampling)
+
+    left = (target_w - fitted_w) // 2
+    top = (target_h - fitted_h) // 2
+    content_box = (left, top, left + fitted_w, top + fitted_h)
+    canvas = Image.new("RGB", (target_w, target_h), _mean_edge_color(source))
+    canvas.paste(fitted, (left, top))
+    return canvas, content_box
+
+
 def _make_shape_mask(shape: Dict[str, Any], size_wh: tuple[int, int], feather_px: int = 5):
     """Return PIL L mask for shape (full canvas). Supports Rectangle/Circle/Polygon."""
     from PIL import Image, ImageDraw, ImageFilter
@@ -288,6 +326,7 @@ def _svd_generate_frames(
     motion_bucket_id: int = 127,
     noise_aug_strength: float = 0.02,
     decode_chunk_size: int = 2,
+    progress_callback=None,
 ):
     """Generate frames with SVD for a single input image.
 
@@ -295,45 +334,35 @@ def _svd_generate_frames(
     We always resize frames back to the original input size so masks align.
     """
     import torch
-    import numpy as np
     gen_device = "cuda" if torch.cuda.is_available() else "cpu"
     generator = torch.Generator(device=gen_device).manual_seed(int(seed))
 
     from PIL import Image
 
     w, h = pil_image_rgb.size
-    w2, h2 = _round_to_multiple(w, 64), _round_to_multiple(h, 64)
-
-    # IMPORTANT: do not rescale (causes seams/warping). Pad instead.
-    if (w2, h2) != (w, h):
-        # Fill pad area with the mean edge color (better than black).
-        arr = np.array(pil_image_rgb, dtype=np.uint8)
-        edge = np.concatenate([
-            arr[0:1, :, :],
-            arr[-1:, :, :],
-            arr[:, 0:1, :],
-            arr[:, -1:, :],
-        ], axis=0)
-        fill = tuple(int(x) for x in edge.reshape(-1, 3).mean(axis=0))
-        img = Image.new("RGB", (w2, h2), fill)
-        img.paste(pil_image_rgb, (0, 0))
-    else:
-        img = pil_image_rgb
+    target_size = (1024, 576)
+    img, content_box = _letterbox_for_svd(pil_image_rgb, target_size)
 
     out = pipe(
         img,
+        height=target_size[1],
+        width=target_size[0],
         num_frames=num_frames,
         fps=fps,
         generator=generator,
         motion_bucket_id=int(motion_bucket_id),
         noise_aug_strength=float(noise_aug_strength),
         decode_chunk_size=int(decode_chunk_size),
+        callback_on_step_end=progress_callback,
     )
     frames = out.frames[0]
 
-    # crop away padding
-    if frames and frames[0].size != (w, h):
-        frames = [f.crop((0, 0, w, h)) for f in frames]
+    # Remove letterboxing and restore the exact patch size for mask alignment.
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    frames = [
+        frame.convert("RGB").crop(content_box).resize((w, h), resampling)
+        for frame in frames
+    ]
     return frames
 
 
@@ -402,7 +431,7 @@ def _mask_shrink_and_feather(mask_L, *, shrink_px: int, feather_px: int):
 
 def _prepare_focus_patch(patch_rgb, mask_hard_L, *, blur_outside_px: int = 8):
     """Blur everything OUTSIDE mask so SVD focuses on the region."""
-    from PIL import ImageFilter
+    from PIL import Image, ImageFilter
 
     blur = patch_rgb.filter(ImageFilter.GaussianBlur(radius=float(blur_outside_px)))
     # composite: inside mask -> original, outside -> blur
@@ -412,6 +441,7 @@ def _prepare_focus_patch(patch_rgb, mask_hard_L, *, blur_outside_px: int = 8):
 def _color_match_frame(frame_rgb, ref_rgb, mask_L, *, max_shift: int = 20):
     """Match mean RGB inside mask to reduce brightness/color drift."""
     import numpy as np
+    from PIL import Image
 
     fr = np.array(frame_rgb.convert("RGB"), dtype=np.int16)
     rr = np.array(ref_rgb.convert("RGB"), dtype=np.int16)
@@ -431,6 +461,7 @@ def _color_match_frame(frame_rgb, ref_rgb, mask_L, *, max_shift: int = 20):
 def _temporal_smooth_frames(frames_rgb, mask_L, *, strength: float = 0.15):
     """Simple EMA smoothing inside mask to reduce flicker."""
     import numpy as np
+    from PIL import Image
 
     if not frames_rgb:
         return frames_rgb
@@ -739,6 +770,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             "num_frames": int(num_frames),
             "seed": seed,
             "decode_chunk_size": int(decode_chunk_size),
+            "svd_size": [1024, 576],
         }
         ckey = _make_cache_key(patch_rgb=patch_cond, mask_L=mask_focus, settings=settings)
         cpath = _cache_path(base_dir, ckey)
@@ -748,6 +780,21 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             frames_piece = _load_cached_frames(cpath)
         else:
             _append_job_log(job, f"SVD layer {tool}: motion={motion_bucket_id} noise={noise_aug_strength:.3f}")
+
+            def on_denoising_step(pipeline, step_index, _timestep, callback_kwargs):
+                step = int(step_index) + 1
+                steps = int(getattr(pipeline, "num_timesteps", 25))
+                job["progress"] = {
+                    "stage": "decoding" if step >= steps else "rendering",
+                    "current": layer_idx,
+                    "total": total_layers,
+                    "layer": str(layer_key),
+                    "step": step,
+                    "steps": steps,
+                }
+                job["updated_at"] = _now()
+                return callback_kwargs
+
             frames_piece = _svd_generate_frames(
                 pipe,
                 patch_cond,
@@ -757,9 +804,17 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
                 motion_bucket_id=int(motion_bucket_id),
                 noise_aug_strength=float(noise_aug_strength),
                 decode_chunk_size=decode_chunk_size,
+                progress_callback=on_denoising_step,
             )
 
             # post: reduce drift/flicker
+            job["progress"] = {
+                "stage": "postprocessing",
+                "current": layer_idx,
+                "total": total_layers,
+                "layer": str(layer_key),
+            }
+            job["updated_at"] = _now()
             frames_piece = [_color_match_frame(f, patch, mask_focus) for f in frames_piece]
             frames_piece = _temporal_smooth_frames(frames_piece, mask_focus, strength=temporal_strength)
 

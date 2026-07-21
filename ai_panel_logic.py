@@ -1050,7 +1050,7 @@ class AIWindow(QMainWindow):
                 print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
             except Exception:
                 pass
-            self._svd_timer.start(1000)
+            self._svd_timer.start(2000)
 
         def _err(msg: str):
             if hasattr(self.ui, "pushButton"):
@@ -1135,7 +1135,10 @@ class AIWindow(QMainWindow):
         state = str(status.get("state") or "unknown")
         prog = status.get("progress") or {}
         stage = prog.get("stage")
-        stage_suffix = f" ({stage})" if stage else ""
+        step = prog.get("step")
+        steps = prog.get("steps")
+        step_suffix = f" {step}/{steps}" if step is not None and steps else ""
+        stage_suffix = f" ({stage}{step_suffix})" if stage else ""
         self._set_render_status(f"AI render: {state}{stage_suffix}")
 
         if state == "done":

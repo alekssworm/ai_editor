@@ -89,6 +89,21 @@ class EffectPreviewDialogTests(unittest.TestCase):
         warning.assert_called_once()
         window.close()
 
+    def test_render_status_displays_denoising_progress(self) -> None:
+        from editor import MainWindow
+
+        window = MainWindow()
+        panel = window.ai_window
+        panel._handle_svd_status(
+            {
+                "state": "running",
+                "progress": {"stage": "rendering", "step": 7, "steps": 25},
+            }
+        )
+
+        self.assertIn("rendering 7/25", panel.statusBar().currentMessage())
+        window.close()
+
     def test_offline_ai_render_restores_ui_with_short_message(self) -> None:
         import backend_client
         from editor import MainWindow
