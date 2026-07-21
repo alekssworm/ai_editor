@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 from .preset_registry import PresetRegistry, resolve_card_preset
@@ -75,4 +76,18 @@ def renderer_params_from_card(
     )
     viscosity = _level(values.get("viscosity"), _LEVELS, 1.0)
     result["wavelength"] = result.get("wavelength", 56.0) * viscosity
+
+    motion = (card or {}).get("motion") or {}
+    if isinstance(motion, Mapping):
+        try:
+            strength = float(motion.get("strength"))
+            if math.isfinite(strength):
+                result["strength"] = min(32.0, max(0.25, strength))
+        except (TypeError, ValueError):
+            pass
+        try:
+            cycles = int(motion.get("cycles"))
+            result["cycles"] = float(min(8, max(1, cycles)))
+        except (TypeError, ValueError):
+            pass
     return result

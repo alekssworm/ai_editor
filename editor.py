@@ -35,6 +35,7 @@ from Activate_disconect_button import activate_polygon_mode
 from m_event import MouseMoveFilter
 from effect_preview import start_effect_preview
 from flow_direction_tool import FlowDirectionController
+from effect_engine.project import normalize_direction
 
 
 class MainWindow(QMainWindow):
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
         self.scene.installEventFilter(self.mouse_filter)
 
         self.ai_window = AIWindow()
+        self.ai_window.motion_changed.connect(self._sync_ai_motion)
         self.ai_window.hide()  # окно создано (для фантомов), но не показано
 
         def open_ai():
@@ -148,6 +150,13 @@ class MainWindow(QMainWindow):
             self.ai_window.activateWindow()
 
         self.ui.ai_panel.clicked.connect(open_ai)
+
+    def _sync_ai_motion(self, shape_id, motion):
+        direction = normalize_direction((motion or {}).get("direction"))
+        if direction is None or int(shape_id) not in self.shape_registry:
+            return
+        self.flow_directions[int(shape_id)] = direction
+        self.flow_direction_controller.refresh_for_selection()
 
     def keyPressEvent(self, event):
         if not on_key_press(self, event):

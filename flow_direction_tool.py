@@ -118,6 +118,9 @@ class FlowDirectionController(QObject):
         if normalized is None or item is None:
             return False
         self.window.flow_directions[int(shape_id)] = normalized
+        ai_window = getattr(self.window, "ai_window", None)
+        if ai_window is not None:
+            ai_window.set_shape_direction(shape_id, normalized)
         self._show_direction(item, normalized)
         return True
 

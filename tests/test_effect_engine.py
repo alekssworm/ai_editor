@@ -161,6 +161,18 @@ class EffectEngineTests(unittest.TestCase):
         self.assertAlmostEqual(params["opacity"], 0.45)
         self.assertLess(params["secondary_wavelength"], 24.0)
 
+    def test_numeric_motion_settings_override_strength_and_keep_whole_cycles(self) -> None:
+        card = {
+            "tool_type": "water",
+            "main": {"key": "main_river", "params": {"intensity": "strong"}},
+            "motion": {"strength": 9, "cycles": 3},
+        }
+
+        params = renderer_params_from_card(card)
+
+        self.assertEqual(params["strength"], 9.0)
+        self.assertEqual(params["cycles"], 3.0)
+
     def test_builtin_presets_support_ids_aliases_and_defaults(self) -> None:
         registry = default_preset_registry()
 

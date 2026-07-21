@@ -93,11 +93,17 @@ def load_scene(self):
         add_shape_to_list(self.ui, shape_id, color)
         if hasattr(self, "ai_window"):
             self.ai_window.add_shape_card(shape_id, item_type, color.name())
+            if direction is not None:
+                self.ai_window.set_shape_direction(shape_id, direction)
 
         if shape_id >= self.shape_id_counter:
             self.shape_id_counter = shape_id + 1
 
     if hasattr(self, "ai_window"):
         self.ai_window.restore_shape_cards_data(full_data.get("shape_cards", []))
+        for card in self.ai_window.collect_shape_cards_data():
+            motion = card.get("motion")
+            if isinstance(motion, dict):
+                self._sync_ai_motion(card.get("id"), motion)
     if hasattr(self, "flow_direction_controller"):
         self.flow_direction_controller.refresh_for_selection()

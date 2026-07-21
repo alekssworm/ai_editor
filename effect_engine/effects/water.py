@@ -42,6 +42,7 @@ class WaterFlowParams:
     wavelength: float = 56.0
     secondary_wavelength: float = 31.0
     opacity: float = 1.0
+    cycles: int = 1
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, float] | None) -> "WaterFlowParams":
@@ -55,6 +56,7 @@ class WaterFlowParams:
                 float(values.get("secondary_wavelength", defaults.secondary_wavelength)),
             ),
             opacity=float(np.clip(values.get("opacity", defaults.opacity), 0.0, 1.0)),
+            cycles=max(1, min(8, int(values.get("cycles", defaults.cycles)))),
         )
 
 
@@ -78,7 +80,7 @@ class WaterFlowEffect:
 
         # Modulo makes t=1 exactly equal to t=0 instead of relying on sin(2*pi)
         # floating-point rounding.
-        phase = np.float32(np.pi * 2.0 * (float(t) % 1.0))
+        phase = np.float32(np.pi * 2.0 * (float(t) % 1.0) * config.cycles)
         rng = np.random.default_rng(assets.seed)
         phase_a, phase_b = rng.uniform(0.0, np.pi * 2.0, size=2).astype(np.float32)
         frequency_scale = np.float32(rng.uniform(0.9, 1.1))

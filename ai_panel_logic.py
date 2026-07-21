@@ -11,7 +11,8 @@ from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsView, QLabel, QFrame, QSizePolicy,
-    QFormLayout, QFileDialog, QMessageBox, QProgressBar
+    QFormLayout, QFileDialog, QMessageBox, QProgressBar, QHBoxLayout,
+    QGridLayout, QSpinBox, QSlider, QButtonGroup
 )
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
 
@@ -486,7 +487,177 @@ class InSceneComboBox(QWidget):
 
 
 
+class MotionSettingsWidget(QFrame):
+    """Compact, loop-safe motion controls for one selected image area."""
+
+    changed = Signal()
+
+    _QUICK_DIRECTIONS = (
+        ("↖", 225), ("↑", 270), ("↗", 315),
+        ("←", 180), ("→", 0),
+        ("↙", 135), ("↓", 90), ("↘", 45),
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._configured = False
+        self._loading = False
+        self.setObjectName("motionSettings")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        title_row = QHBoxLayout()
+        title = QLabel("Motion")
+        title.setObjectName("sectionTitle")
+        self.direction_label = QLabel("→  Right")
+        self.direction_label.setObjectName("motionSummary")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.direction_label)
+        layout.addLayout(title_row)
+
+        direction_grid = QGridLayout()
+        direction_grid.setSpacing(3)
+        positions = ((0, 0), (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1), (2, 2))
+        for (text, angle), (row, column) in zip(self._QUICK_DIRECTIONS, positions):
+            button = QPushButton(text)
+            button.setObjectName("directionButton")
+            button.setFixedSize(32, 26)
+            button.setToolTip(f"Set direction to {angle}°")
+            button.clicked.connect(lambda _checked=False, value=angle: self.set_angle(value))
+            direction_grid.addWidget(button, row, column)
+
+        angle_row = QHBoxLayout()
+        angle_row.addLayout(direction_grid)
+        angle_row.addSpacing(6)
+        angle_label = QLabel("Angle")
+        self.angle_spin = QSpinBox()
+        self.angle_spin.setObjectName("motionAngle")
+        self.angle_spin.setRange(0, 359)
+        self.angle_spin.setSuffix("°")
+        self.angle_spin.setWrapping(True)
+        self.angle_spin.setToolTip("0° right, 90° down, 180° left, 270° up")
+        angle_row.addWidget(angle_label)
+        angle_row.addWidget(self.angle_spin)
+        angle_row.addStretch(1)
+        layout.addLayout(angle_row)
+
+        self.strength_slider, self.strength_spin = self._add_value_row(
+            layout, "Amplitude", "motionStrength", 1, 20, 4, " px"
+        )
+        self.cycles_slider, self.cycles_spin = self._add_value_row(
+            layout, "Speed", "motionCycles", 1, 4, 1, " cycles"
+        )
+        self.cycles_spin.setToolTip(
+            "Whole cycles per loop; integer values keep the animation seamless"
+        )
+
+        self.angle_spin.valueChanged.connect(self._on_value_changed)
+        self.strength_spin.valueChanged.connect(self._on_value_changed)
+        self.cycles_spin.valueChanged.connect(self._on_value_changed)
+        self._update_direction_label()
+
+    @staticmethod
+    def _add_value_row(layout, label_text, object_name, minimum, maximum, value, suffix):
+        row = QHBoxLayout()
+        label = QLabel(label_text)
+        label.setMinimumWidth(68)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setObjectName(f"{object_name}Slider")
+        slider.setRange(minimum, maximum)
+        slider.setValue(value)
+        spin = QSpinBox()
+        spin.setObjectName(object_name)
+        spin.setRange(minimum, maximum)
+        spin.setValue(value)
+        spin.setSuffix(suffix)
+        spin.setFixedWidth(82)
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        row.addWidget(label)
+        row.addWidget(slider, 1)
+        row.addWidget(spin)
+        layout.addLayout(row)
+        return slider, spin
+
+    @property
+    def configured(self):
+        return self._configured
+
+    def _on_value_changed(self, _value=None):
+        self._update_direction_label()
+        if self._loading:
+            return
+        self._configured = True
+        self.changed.emit()
+
+    def _update_direction_label(self):
+        angle = self.angle_spin.value()
+        names = {
+            0: "→  Right", 45: "↘  Down-right", 90: "↓  Down",
+            135: "↙  Down-left", 180: "←  Left", 225: "↖  Up-left",
+            270: "↑  Up", 315: "↗  Up-right",
+        }
+        self.direction_label.setText(names.get(angle, f"{angle}°"))
+
+    def set_angle(self, angle_deg, *, configured=True):
+        previous_loading = self._loading
+        self._loading = not configured
+        previous_angle = self.angle_spin.value()
+        self.angle_spin.setValue(round(float(angle_deg)) % 360)
+        self._loading = previous_loading
+        if configured:
+            self._configured = True
+            if self.angle_spin.value() == previous_angle:
+                self.changed.emit()
+        self._update_direction_label()
+
+    def set_motion(self, motion, *, configured=True):
+        if not isinstance(motion, dict):
+            return
+        from effect_engine.project import angle_from_direction
+
+        angle = motion.get("angle_deg")
+        try:
+            angle = float(angle)
+        except (TypeError, ValueError):
+            angle = angle_from_direction(motion.get("direction"), self.angle_spin.value())
+        try:
+            strength = round(float(motion.get("strength", 4)))
+        except (TypeError, ValueError):
+            strength = 4
+        try:
+            cycles = round(float(motion.get("cycles", 1)))
+        except (TypeError, ValueError):
+            cycles = 1
+        self._loading = True
+        try:
+            self.angle_spin.setValue(round(angle) % 360)
+            self.strength_spin.setValue(strength)
+            self.cycles_spin.setValue(cycles)
+        finally:
+            self._loading = False
+        self._configured = bool(configured)
+        self._update_direction_label()
+
+    def motion_data(self):
+        from effect_engine.project import direction_from_angle
+
+        angle = self.angle_spin.value()
+        direction = direction_from_angle(angle)
+        return {
+            "angle_deg": angle,
+            "direction": [round(direction[0], 8), round(direction[1], 8)],
+            "strength": self.strength_spin.value(),
+            "cycles": self.cycles_spin.value(),
+        }
+
+
 class ShapeCard(QWidget):
+    motion_changed = Signal(int, object)
+
     def __init__(self, shape_id, shape_type, color_name):
         super().__init__()
         self.shape_id = shape_id
@@ -497,7 +668,8 @@ class ShapeCard(QWidget):
         self.main_layout.setContentsMargins(4, 4, 4, 4)
         self.main_layout.setSpacing(4)
 
-        label = QLabel(f"{shape_type} | ID: {shape_id}")
+        label = QLabel(f"{shape_type}  ·  Area {shape_id}")
+        label.setObjectName("shapeCardTitle")
         label.setStyleSheet(f"""
             color: white;
             border: 2px solid {color_name};
@@ -518,9 +690,22 @@ class ShapeCard(QWidget):
         self.frame_layout.setContentsMargins(4, 4, 4, 4)
         self.frame_layout.setSpacing(4)
 
+        self.motion_controls = MotionSettingsWidget(self.frame)
+        self.motion_controls.changed.connect(self._emit_motion_changed)
+        self.frame_layout.addWidget(self.motion_controls)
+
         self.tool_type = None
         self.main_function_added = False
         self.added_subfunctions = set()
+
+    def _emit_motion_changed(self):
+        self.motion_changed.emit(int(self.shape_id), self.motion_controls.motion_data())
+
+    def set_motion(self, motion, *, configured=True):
+        self.motion_controls.set_motion(motion, configured=configured)
+
+    def motion_data(self):
+        return self.motion_controls.motion_data()
 
 
 from PySide6.QtWidgets import QGraphicsWidget, QGraphicsLinearLayout, QGraphicsProxyWidget
@@ -551,10 +736,13 @@ class ShapeCardGraphicsWidget(QGraphicsWidget):
 
 
 class AIWindow(QMainWindow):
+    motion_changed = Signal(int, object)
+
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.setWindowTitle("AI Effects")
         self.selected_shape_id = None
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setText("AI render")
@@ -568,7 +756,7 @@ class AIWindow(QMainWindow):
             )
             self.ui.pushButton_9.clicked.connect(self.save_effects_to_project)
 
-        self.render_status_label = QLabel("AI: готов к работе", self)
+        self.render_status_label = QLabel("AI: ready", self)
         self.render_status_label.setMinimumWidth(260)
         self.render_status_label.setToolTip("Текущий этап AI-рендера")
         self.render_progress_bar = QProgressBar(self)
@@ -588,6 +776,22 @@ class AIWindow(QMainWindow):
         self.ui.graphicsView.setStyleSheet("background-color: #1e1e1e; border: none;")
         self.ui.graphicsView.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.ui.graphicsView.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        self.ui.water_button.setText("Water")
+        self.ui.fire_button.setText("Fire")
+        self.ui.light_button.setText("Light")
+        self.ui.weather_tool.setText("Weather")
+        self.ui.label_13.setText("Selected area:")
+        self.tool_button_group = QButtonGroup(self)
+        self.tool_button_group.setExclusive(True)
+        for button in (
+            self.ui.water_button,
+            self.ui.fire_button,
+            self.ui.light_button,
+            self.ui.weather_tool,
+        ):
+            button.setCheckable(True)
+            self.tool_button_group.addButton(button)
 
         self.ui.weather_tool.clicked.connect(lambda: self.load_tool_panel(Ui_weather_tool))
         self.ui.water_button.clicked.connect(lambda: self.load_tool_panel(Ui_water_tool))
@@ -619,16 +823,76 @@ class AIWindow(QMainWindow):
 
         self.tool_container_layout = QVBoxLayout(self.ui.scrollAreaWidgetContents)
         self.tool_container_layout.setSpacing(6)
-        self.tool_container_layout.setContentsMargins(4, 4, 4, 4)
+        self.tool_container_layout.setContentsMargins(8, 8, 8, 8)
+        self.tool_panel_title = QLabel("Effect presets")
+        self.tool_panel_title.setObjectName("panelTitle")
+        self.tool_container_layout.addWidget(self.tool_panel_title)
+        self._active_tool_widget = None
+        self._apply_ai_panel_style()
+
+    def _apply_ai_panel_style(self):
+        self.setStyleSheet("""
+            QMainWindow, QWidget#centralwidget { background: #0f172a; color: #e5e7eb; }
+            QFrame#frame_2 { background: #111827; border-bottom: 1px solid #263247; }
+            QPushButton {
+                min-height: 28px; padding: 4px 10px; color: #dbeafe;
+                background: #1e293b; border: 1px solid #334155; border-radius: 6px;
+            }
+            QPushButton:hover { background: #29384f; border-color: #64748b; }
+            QPushButton:checked { background: #164e63; border-color: #22d3ee; color: white; }
+            QPushButton#pushButton { background: #2563eb; border-color: #3b82f6; color: white; font-weight: 600; }
+            QPushButton#pushButton:hover { background: #1d4ed8; }
+            QPushButton#pushButton_9 { background: #17344f; border-color: #25678c; }
+            QLabel#panelTitle { color: #f8fafc; font-size: 15px; font-weight: 700; padding: 4px 2px; }
+            QLabel#shapeCardTitle { color: #f8fafc; font-weight: 700; border-radius: 6px; padding: 6px; }
+            QLabel#sectionTitle { color: #f8fafc; font-weight: 700; }
+            QLabel#motionSummary { color: #67e8f9; font-weight: 600; }
+            QFrame#motionSettings { background: #111c2f; border: 1px solid #334155; border-radius: 7px; }
+            QPushButton#directionButton { min-height: 0; padding: 0; font-size: 15px; }
+            QSpinBox { background: #172033; color: #f8fafc; border: 1px solid #475569; border-radius: 5px; padding: 3px; }
+            QProgressBar { color: #e5e7eb; background: #1e293b; border: 1px solid #334155; border-radius: 5px; text-align: center; }
+            QProgressBar::chunk { background: #22c55e; border-radius: 4px; }
+            QScrollArea { background: #0b1220; border: 1px solid #263247; border-radius: 7px; }
+            QScrollArea > QWidget > QWidget { background: #0b1220; }
+        """)
 
     def add_shape_card(self, shape_id, shape_type, color_name):
         shape_widget = ShapeCard(shape_id, shape_type, color_name)
+        shape_widget.motion_changed.connect(self._on_card_motion_changed)
         widget = ShapeCardGraphicsWidget(shape_id, shape_widget, self)
         widget.setPos(40 + len(self.shape_cards) * 30, 40 + len(self.shape_cards) * 30)
         self.scene.addItem(widget)
         self.shape_cards[shape_id] = widget
 
         print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
+
+    def _on_card_motion_changed(self, shape_id, motion):
+        self.motion_changed.emit(int(shape_id), dict(motion))
+        self._set_render_status(
+            f"Area {shape_id}: motion {motion['angle_deg']}°, "
+            f"{motion['strength']} px, {motion['cycles']} cycle(s)",
+            3500,
+        )
+
+    def set_shape_direction(self, shape_id, direction, *, notify=False):
+        """Synchronize a direction selected in the main editor with its AI card."""
+        from effect_engine.project import angle_from_direction, normalize_direction
+
+        normalized = normalize_direction(direction)
+        graphics_widget = self.shape_cards.get(int(shape_id))
+        if normalized is None or graphics_widget is None:
+            return False
+        proxy = graphics_widget.layout().itemAt(0)
+        shape_card = proxy.widget() if proxy else None
+        if shape_card is None:
+            return False
+        motion = shape_card.motion_data()
+        motion["direction"] = list(normalized)
+        motion["angle_deg"] = round(angle_from_direction(normalized)) % 360
+        shape_card.set_motion(motion, configured=True)
+        if notify:
+            self.motion_changed.emit(int(shape_id), shape_card.motion_data())
+        return True
 
     def select_shape_card(self, shape_id) -> None:
         self.selected_shape_id = int(shape_id)
@@ -719,6 +983,10 @@ class AIWindow(QMainWindow):
             if shape_card is None:
                 continue
 
+            motion = card_data.get("motion")
+            if isinstance(motion, dict):
+                shape_card.set_motion(motion, configured=True)
+
             entries = []
             if isinstance(card_data.get("main"), dict):
                 entries.append(card_data["main"])
@@ -779,6 +1047,11 @@ class AIWindow(QMainWindow):
         self.last_tool_type = ui_class.__name__
         print(f"[DEBUG] Активирован инструмент: {self.last_tool_type}")
 
+        if self._active_tool_widget is not None:
+            self.tool_container_layout.removeWidget(self._active_tool_widget)
+            self._active_tool_widget.deleteLater()
+            self._active_tool_widget = None
+
         tool_widget = QWidget()
         ui = ui_class()
         ui.setupUi(tool_widget)
@@ -817,6 +1090,7 @@ class AIWindow(QMainWindow):
         size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         tool_widget.setSizePolicy(size_policy)
         self.tool_container_layout.addWidget(tool_widget)
+        self._active_tool_widget = tool_widget
 
     def add_button_name_to_shape_card(self, button_text, button_name):
         print(f"[DEBUG] Нажата кнопка: {button_text} ({button_name})")
@@ -917,6 +1191,7 @@ class AIWindow(QMainWindow):
         # Keep the stable UI object name. The visible label (for example
         # "Campfire") does not contain the main_/sub_ prefix.
         wrapper.setProperty("effect_key", button_name)
+        wrapper.setProperty("effect_block", True)
         wrapper.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 4px;")
 
         shape_card.frame_layout.addWidget(wrapper)
@@ -936,10 +1211,12 @@ class AIWindow(QMainWindow):
                 "main": None,
                 "sub": [],
             }
+            if shape_card.motion_controls.configured:
+                shape_info["motion"] = shape_card.motion_data()
 
             for i in range(shape_card.frame_layout.count()):
                 block = shape_card.frame_layout.itemAt(i).widget()
-                if not block:
+                if not block or not bool(block.property("effect_block")):
                     continue
 
                 layout = block.layout()
@@ -1014,6 +1291,26 @@ class AIWindow(QMainWindow):
                     cards.append(card)
             project["shape_cards"] = cards
 
+            flow_directions = project.get("flow_directions")
+            if not isinstance(flow_directions, dict):
+                flow_directions = {}
+            from effect_engine.project import normalize_direction
+            for card in cards:
+                motion = card.get("motion")
+                if not isinstance(motion, dict):
+                    continue
+                direction = normalize_direction(motion.get("direction"))
+                if direction is None:
+                    continue
+                key = str(int(card["id"]))
+                existing = normalize_direction(flow_directions.get(key))
+                if existing is None or any(
+                    abs(existing[index] - direction[index]) > 1e-7
+                    for index in (0, 1)
+                ):
+                    flow_directions[key] = {"x": direction[0], "y": direction[1]}
+            project["flow_directions"] = flow_directions
+
             project_dir = os.path.dirname(os.path.abspath(shapes_json))
             with tempfile.NamedTemporaryFile(
                 "w",
@@ -1068,12 +1365,43 @@ class AIWindow(QMainWindow):
         """
         if shapes_json_path:
             self.render_shapes_json_path = shapes_json_path
+            self._load_project_motion(shapes_json_path)
         if masks_dir:
             self.render_masks_dir = masks_dir
         if pieces_dir:
             self.render_pieces_dir = pieces_dir
         if out_mp4_path:
             self.render_out_mp4_path = out_mp4_path
+
+    def _load_project_motion(self, shapes_json_path):
+        """Populate controls from card motion or legacy top-level flow vectors."""
+        try:
+            with open(shapes_json_path, "r", encoding="utf-8") as source:
+                project = json.load(source)
+        except (OSError, ValueError):
+            return
+
+        cards_by_id = {}
+        for card in project.get("shape_cards") or []:
+            try:
+                cards_by_id[int(card.get("id"))] = card
+            except (AttributeError, TypeError, ValueError):
+                continue
+        directions = project.get("flow_directions") or {}
+        if not isinstance(directions, dict):
+            directions = {}
+        for shape_id, graphics_widget in self.shape_cards.items():
+            proxy = graphics_widget.layout().itemAt(0)
+            shape_card = proxy.widget() if proxy else None
+            if shape_card is None or shape_card.motion_controls.configured:
+                continue
+            saved_motion = (cards_by_id.get(int(shape_id)) or {}).get("motion")
+            if isinstance(saved_motion, dict):
+                shape_card.set_motion(saved_motion, configured=True)
+                continue
+            raw_direction = directions.get(str(int(shape_id)), directions.get(int(shape_id)))
+            if raw_direction is not None:
+                self.set_shape_direction(shape_id, raw_direction)
 
     def on_render_clicked(self):
         # 1) определяем shapes.json

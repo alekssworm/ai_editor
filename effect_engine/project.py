@@ -43,6 +43,20 @@ def normalize_direction(value: Any) -> tuple[float, float] | None:
     return x / length, y / length
 
 
+def direction_from_angle(angle_deg: float) -> tuple[float, float]:
+    """Return an image-space direction (x right, y down) for an angle."""
+    angle = math.radians(float(angle_deg) % 360.0)
+    return math.cos(angle), math.sin(angle)
+
+
+def angle_from_direction(value: Any, default: float = 0.0) -> float:
+    """Return a 0..359 degree image-space angle for a saved direction."""
+    direction = normalize_direction(value)
+    if direction is None:
+        return float(default) % 360.0
+    return math.degrees(math.atan2(direction[1], direction[0])) % 360.0
+
+
 def project_flow_direction(
     project: Mapping[str, Any], shape_id: int
 ) -> tuple[float, float] | None:

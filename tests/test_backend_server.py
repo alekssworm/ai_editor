@@ -62,6 +62,43 @@ class BackendServerTests(unittest.TestCase):
         self.assertEqual((top, bottom), (0, 576))
         self.assertEqual(right - left, 288)
 
+    def test_card_motion_maps_to_directional_svd_postprocessing(self) -> None:
+        settings = backend_server._card_to_svd_settings(
+            {
+                "main": {"params": {}},
+                "motion": {
+                    "direction": [0, 2],
+                    "strength": 7,
+                    "cycles": 3,
+                },
+            }
+        )
+
+        self.assertEqual(settings[3], (0.0, 1.0))
+        self.assertEqual(settings[4], 7.0)
+        self.assertEqual(settings[5], 3)
+
+    def test_directional_postprocessing_is_deterministic_and_loop_aligned(self) -> None:
+        source = Image.new("RGB", (12, 8), "black")
+        for x in range(source.width):
+            for y in range(source.height):
+                source.putpixel((x, y), (x * 20, y * 20, 30))
+        frames = [source.copy() for _ in range(8)]
+
+        first = backend_server._apply_directional_loop(
+            frames, (1, 0), amplitude_px=3, cycles=1
+        )
+        second = backend_server._apply_directional_loop(
+            frames, (1, 0), amplitude_px=3, cycles=1
+        )
+
+        self.assertEqual(first[0].tobytes(), source.tobytes())
+        self.assertNotEqual(first[2].tobytes(), source.tobytes())
+        self.assertEqual(
+            [frame.tobytes() for frame in first],
+            [frame.tobytes() for frame in second],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

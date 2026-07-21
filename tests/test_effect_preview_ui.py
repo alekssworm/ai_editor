@@ -146,15 +146,20 @@ class EffectPreviewDialogTests(unittest.TestCase):
                 ]
             )
             panel.set_render_sources(shapes_json_path=str(project_path))
+            graphics_widget = panel.shape_cards[22]
+            shape_card = graphics_widget.layout().itemAt(0).widget()
+            shape_card.motion_controls.set_angle(90)
 
             with patch("ai_panel_logic.QMessageBox.information") as information:
                 panel.ui.pushButton_9.click()
 
             saved = json.loads(project_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["custom_field"], "preserve me")
-            self.assertEqual(saved["flow_directions"], {"22": [1.0, 0.0]})
+            self.assertAlmostEqual(saved["flow_directions"]["22"]["x"], 0.0, places=6)
+            self.assertAlmostEqual(saved["flow_directions"]["22"]["y"], 1.0, places=6)
             self.assertEqual(saved["shape_cards"][0]["id"], 22)
             self.assertEqual(saved["shape_cards"][0]["preset_id"], "still_water")
+            self.assertEqual(saved["shape_cards"][0]["motion"]["angle_deg"], 90)
             self.assertFalse(list(Path(directory).glob(".shapes-*.tmp")))
             information.assert_called_once()
             window.close()
@@ -281,6 +286,31 @@ class EffectPreviewDialogTests(unittest.TestCase):
         self.assertAlmostEqual(direction[0], 1.0)
         self.assertAlmostEqual(direction[1], 0.0)
         self.assertFalse(window.flow_direction_controller.active)
+        window.close()
+
+    def test_ai_motion_controls_update_main_flow_and_round_trip(self) -> None:
+        from editor import MainWindow
+
+        window = MainWindow()
+        item = ResizableRectItem(QRectF(10, 10, 80, 40), QColor("#00aaff"))
+        window.scene.addItem(item)
+        window.shape_registry[55] = item
+        window.ai_window.add_shape_card(55, "Rectangle", "#00aaff")
+        graphics_widget = window.ai_window.shape_cards[55]
+        shape_card = graphics_widget.layout().itemAt(0).widget()
+
+        shape_card.motion_controls.set_angle(90)
+        shape_card.motion_controls.strength_spin.setValue(11)
+        shape_card.motion_controls.cycles_spin.setValue(3)
+        self.app.processEvents()
+
+        direction = window.flow_directions[55]
+        self.assertAlmostEqual(direction[0], 0.0, places=6)
+        self.assertAlmostEqual(direction[1], 1.0, places=6)
+        saved = window.ai_window.collect_shape_cards_data()[0]["motion"]
+        self.assertEqual(saved["angle_deg"], 90)
+        self.assertEqual(saved["strength"], 11)
+        self.assertEqual(saved["cycles"], 3)
         window.close()
 
 

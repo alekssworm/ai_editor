@@ -380,9 +380,18 @@ def _save_outputs_impl(self, folder=None):
             continue
         if card_id in valid_ids:
             filtered_cards.append(card)
-    flow_directions = serialize_flow_directions(
-        getattr(self, "flow_directions", {}), valid_ids
-    )
+    directions_for_save = dict(getattr(self, "flow_directions", {}))
+    for card in filtered_cards:
+        motion = card.get("motion")
+        if not isinstance(motion, dict):
+            continue
+        try:
+            card_id = int(card.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if motion.get("direction") is not None:
+            directions_for_save[card_id] = motion["direction"]
+    flow_directions = serialize_flow_directions(directions_for_save, valid_ids)
     _write_json_atomic(
         project_path,
         {

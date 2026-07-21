@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 import os
 import re
 import sys
@@ -366,16 +367,36 @@ def _svd_generate_frames(
     return frames
 
 
-def _card_to_svd_settings(card: Optional[Dict[str, Any]]):
-    """Map UI shape_cards to SVD settings (motion/noise) + alpha scaling."""
+def _card_to_svd_settings(
+    card: Optional[Dict[str, Any]], fallback_direction=None
+):
+    """Map a UI card to SVD generation and deterministic motion settings."""
     motion_bucket_id = 127
     noise_aug_strength = 0.02
     alpha_scale = 0.75
 
-    if not card:
-        return motion_bucket_id, noise_aug_strength, alpha_scale
+    from effect_engine.project import normalize_direction
 
-    main = card.get("main") or {}
+    motion = (card or {}).get("motion") or {}
+    direction = None
+    strength = 0.0
+    cycles = 1
+    if isinstance(motion, dict):
+        direction = normalize_direction(motion.get("direction"))
+        try:
+            strength = min(32.0, max(0.0, float(motion.get("strength", 4.0))))
+        except (TypeError, ValueError):
+            strength = 4.0
+        try:
+            cycles = min(8, max(1, int(motion.get("cycles", 1))))
+        except (TypeError, ValueError):
+            cycles = 1
+    if direction is None:
+        direction = normalize_direction(fallback_direction)
+        if direction is not None and not motion:
+            strength = 4.0
+
+    main = (card or {}).get("main") or {}
     params = main.get("params") or {}
     intensity = str(params.get("intensity", "normal")).lower()
     randomness = str(params.get("randomness", "normal")).lower()
@@ -385,7 +406,14 @@ def _card_to_svd_settings(card: Optional[Dict[str, Any]]):
     motion_bucket_id = {"weak": 80, "normal": 96, "strong": 127}.get(intensity, 96)
     noise_aug_strength = {"weak": 0.008, "normal": 0.015, "strong": 0.03}.get(randomness, 0.015)
     alpha_scale = {"weak": 0.55, "normal": 0.75, "strong": 1.0}.get(opacity, 0.75)
-    return motion_bucket_id, noise_aug_strength, alpha_scale
+    return (
+        motion_bucket_id,
+        noise_aug_strength,
+        alpha_scale,
+        direction,
+        strength,
+        cycles,
+    )
 
 
 def _shape_bbox(sh: Dict[str, Any]) -> Optional[tuple[int, int, int, int]]:
@@ -480,6 +508,37 @@ def _temporal_smooth_frames(frames_rgb, mask_L, *, strength: float = 0.15):
         out.append(img)
         prev = sm
     return out
+
+
+def _apply_directional_loop(
+    frames_rgb,
+    direction,
+    *,
+    amplitude_px: float = 4.0,
+    cycles: int = 1,
+):
+    """Apply a deterministic, seamless directional motion bias to SVD frames."""
+    from PIL import ImageChops
+    from effect_engine.project import normalize_direction
+
+    normalized = normalize_direction(direction)
+    if not frames_rgb or normalized is None or amplitude_px <= 0:
+        return frames_rgb
+
+    dx, dy = normalized
+    perpendicular = (-dy, dx)
+    frame_count = len(frames_rgb)
+    loop_cycles = min(8, max(1, int(cycles)))
+    amplitude = min(32.0, max(0.0, float(amplitude_px)))
+    result = []
+    for index, frame in enumerate(frames_rgb):
+        phase = math.tau * loop_cycles * index / frame_count
+        along = math.sin(phase) * amplitude
+        across = (1.0 - math.cos(phase)) * amplitude * 0.18
+        offset_x = round(dx * along + perpendicular[0] * across)
+        offset_y = round(dy * along + perpendicular[1] * across)
+        result.append(ImageChops.offset(frame.convert("RGB"), offset_x, offset_y))
+    return result
 
 
 def _cache_path(base_dir: str, key: str) -> str:
@@ -646,7 +705,10 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     base_frames = [rgba0.copy() for _ in range(num_frames)]
 
     # --- group shapes into layers (stage2) ---
-    layers: Dict[tuple[str, int, float], list[tuple[Dict[str, Any], int, float]]] = {}
+    layers: Dict[tuple, list[tuple[Dict[str, Any], int, float]]] = {}
+    project_directions = project.get("flow_directions") or {}
+    if not isinstance(project_directions, dict):
+        project_directions = {}
     for idx, sh in enumerate(shapes, start=1):
         try:
             sid = int(sh.get("id") or idx)
@@ -655,9 +717,30 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
         card = cards_by_id.get(sid) or {}
         tool = str(card.get("tool_type") or "default").lower()
-        motion_bucket_id, noise_aug_strength, alpha_scale = _card_to_svd_settings(card)
+        fallback_direction = project_directions.get(str(sid), project_directions.get(sid))
+        (
+            motion_bucket_id,
+            noise_aug_strength,
+            alpha_scale,
+            direction,
+            directional_strength,
+            cycles,
+        ) = _card_to_svd_settings(card, fallback_direction)
 
-        key = (tool, int(motion_bucket_id), float(noise_aug_strength))
+        direction_key = (
+            (round(direction[0], 6), round(direction[1], 6))
+            if direction is not None
+            else (0.0, 0.0)
+        )
+        key = (
+            tool,
+            int(motion_bucket_id),
+            float(noise_aug_strength),
+            direction_key[0],
+            direction_key[1],
+            round(float(directional_strength), 3),
+            int(cycles),
+        )
         layers.setdefault(key, []).append((sh, sid, float(alpha_scale)))
 
     layer_items = list(layers.items())
@@ -667,7 +750,16 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     from PIL import ImageDraw, ImageChops
 
     def _render_one_layer(layer_idx: int, layer_key, entries):
-        tool, motion_bucket_id, noise_aug_strength = layer_key
+        (
+            tool,
+            motion_bucket_id,
+            noise_aug_strength,
+            direction_x,
+            direction_y,
+            directional_strength,
+            cycles,
+        ) = layer_key
+        direction = (direction_x, direction_y)
 
         # union bbox
         boxes = []
@@ -697,7 +789,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
         if len(entries) > 1 and pw * ph > 1024 * 1024:
             _append_job_log(job, f"layer {tool} too large ({pw}x{ph}); falling back to per-shape")
             for sh, sid, a in entries:
-                _render_one_layer(layer_idx, (tool, motion_bucket_id, noise_aug_strength), [(sh, sid, a)])
+                _render_one_layer(layer_idx, layer_key, [(sh, sid, a)])
             return
 
         patch_bg = bg_orig.crop((x0, y0, x1, y1)).convert("RGB")
@@ -771,6 +863,9 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             "seed": seed,
             "decode_chunk_size": int(decode_chunk_size),
             "svd_size": [1024, 576],
+            "direction": [direction_x, direction_y],
+            "directional_strength": float(directional_strength),
+            "cycles": int(cycles),
         }
         ckey = _make_cache_key(patch_rgb=patch_cond, mask_L=mask_focus, settings=settings)
         cpath = _cache_path(base_dir, ckey)
@@ -779,7 +874,12 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             _append_job_log(job, f"cache hit: layer {tool} -> {os.path.basename(cpath)}")
             frames_piece = _load_cached_frames(cpath)
         else:
-            _append_job_log(job, f"SVD layer {tool}: motion={motion_bucket_id} noise={noise_aug_strength:.3f}")
+            _append_job_log(
+                job,
+                f"SVD layer {tool}: motion={motion_bucket_id} "
+                f"noise={noise_aug_strength:.3f} direction={direction} "
+                f"amplitude={directional_strength:.1f}px cycles={cycles}",
+            )
 
             def on_denoising_step(pipeline, step_index, _timestep, callback_kwargs):
                 step = int(step_index) + 1
@@ -815,6 +915,12 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
                 "layer": str(layer_key),
             }
             job["updated_at"] = _now()
+            frames_piece = _apply_directional_loop(
+                frames_piece,
+                direction,
+                amplitude_px=float(directional_strength),
+                cycles=int(cycles),
+            )
             frames_piece = [_color_match_frame(f, patch, mask_focus) for f in frames_piece]
             frames_piece = _temporal_smooth_frames(frames_piece, mask_focus, strength=temporal_strength)
 
