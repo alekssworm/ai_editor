@@ -64,6 +64,38 @@ class BackendServerTests(unittest.TestCase):
         self.assertEqual(matched.size, patch.size)
         self.assertEqual(len(smoothed), 2)
 
+    def test_structure_preservation_suppresses_large_svd_hallucinations(self) -> None:
+        import numpy as np
+
+        reference = Image.new("RGB", (64, 32), (120, 130, 145))
+        generated = reference.copy()
+        for x in range(12, 52):
+            for y in range(8, 25):
+                generated.putpixel((x, y), (25, 30, 35))
+
+        preserved = backend_server._preserve_reference_structure(
+            generated,
+            reference,
+            low_frequency_mix=0.03,
+            detail_mix=0.22,
+            max_change=18,
+        )
+        raw_error = np.abs(
+            np.array(generated, dtype=np.int16)
+            - np.array(reference, dtype=np.int16)
+        ).mean()
+        preserved_error = np.abs(
+            np.array(preserved, dtype=np.int16)
+            - np.array(reference, dtype=np.int16)
+        ).mean()
+
+        self.assertGreater(preserved_error, 0)
+        self.assertLess(preserved_error, raw_error * 0.2)
+        self.assertEqual(
+            backend_server._effect_profile_id({"preset_id": "still_water"}),
+            "still_water",
+        )
+
     def test_mean_edge_color_supports_rectangular_images(self) -> None:
         image = Image.new("RGB", (11, 5), (10, 20, 30))
 
@@ -265,6 +297,94 @@ class BackendServerTests(unittest.TestCase):
                 self.assertTrue(writer.closed)
             finally:
                 backend_server._jobs.pop(job_id, None)
+
+    def test_cached_render_skips_heavy_pipeline_loading(self) -> None:
+        class DummyWriter:
+            def append_data(self, _frame):
+                pass
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            Image.new("RGB", (20, 16), "blue").save(base / "background.png")
+            (base / "shapes.json").write_text(
+                json.dumps(
+                    {
+                        "background": "background.png",
+                        "shapes": [
+                            {
+                                "id": 1,
+                                "type": "Rectangle",
+                                "x": 2,
+                                "y": 2,
+                                "width": 12,
+                                "height": 10,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake_torch = SimpleNamespace(
+                cuda=SimpleNamespace(is_available=lambda: False)
+            )
+
+            def fake_frames(_pipe, image, **kwargs):
+                return [image.copy() for _ in range(kwargs["num_frames"])]
+
+            def fake_writer(path, **_kwargs):
+                Path(path).touch()
+                return DummyWriter()
+
+            request = backend_server.RenderRequest(
+                shapes_json=str(base / "shapes.json"),
+                out_mp4=str(base / "first.mp4"),
+                fps=2,
+                num_frames=2,
+                enable_cache=True,
+            )
+            jobs = ("cache-fill", "cache-hit")
+            for job_id in jobs:
+                backend_server._jobs[job_id] = {
+                    "job_id": job_id,
+                    "state": "queued",
+                    "progress": {},
+                    "log": [],
+                }
+            try:
+                with (
+                    patch.dict(os.environ, {"AI_BACKEND_ALLOW_CPU": "1"}),
+                    patch.dict(sys.modules, {"torch": fake_torch}),
+                    patch("backend_server._load_svd_pipeline", return_value=object()),
+                    patch("backend_server._svd_generate_frames", side_effect=fake_frames),
+                    patch("imageio.get_writer", side_effect=fake_writer),
+                ):
+                    backend_server._render_svd_job(jobs[0], request)
+
+                cached_request = request.model_copy(
+                    update={"out_mp4": str(base / "second.mp4")}
+                )
+                with (
+                    patch(
+                        "backend_server._load_svd_pipeline",
+                        side_effect=AssertionError("pipeline must not load on cache hit"),
+                    ),
+                    patch("imageio.get_writer", side_effect=fake_writer),
+                ):
+                    backend_server._render_svd_job(jobs[1], cached_request)
+
+                self.assertEqual(backend_server._jobs[jobs[1]]["state"], "done")
+                self.assertTrue(
+                    any(
+                        "cache hit" in entry["msg"]
+                        for entry in backend_server._jobs[jobs[1]]["log"]
+                    )
+                )
+            finally:
+                for job_id in jobs:
+                    backend_server._jobs.pop(job_id, None)
 
 
 if __name__ == "__main__":

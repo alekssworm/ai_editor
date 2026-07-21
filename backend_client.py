@@ -23,6 +23,7 @@ DEBUG = os.environ.get("AI_BACKEND_DEBUG", "1") not in ("0", "false", "False", "
 LOGFILE = os.environ.get("AI_BACKEND_CLIENT_LOG", os.path.join(os.getcwd(), "backend_client.log"))
 _session = requests.Session()
 _autostart_lock = threading.Lock()
+_autostart_process = None
 
 
 class BackendClientError(RuntimeError):
@@ -93,7 +94,10 @@ def _backend_launch_spec():
 
         windows_python = project_dir / ".venv" / "Scripts" / "python.exe"
         if windows_python.exists():
-            return ([str(windows_python), "backend_server.py"], str(project_dir))
+            return (
+                [str(windows_python), "backend_server.py"],
+                str(project_dir),
+            )
         return ([sys.executable, "backend_server.py"], str(project_dir))
 
     local_python = project_dir / ".venv-wsl" / "bin" / "python"
@@ -105,6 +109,7 @@ def _backend_launch_spec():
 
 def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
     """Start this project's backend when BASE points at the local machine."""
+    global _autostart_process
     enabled = os.environ.get("AI_BACKEND_AUTOSTART", "1") not in {
         "0",
         "false",
@@ -138,6 +143,7 @@ def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
             )
         try:
             process = subprocess.Popen(command, **popen_kwargs)
+            _autostart_process = process
         except (OSError, ValueError) as error:
             _log(f"backend autostart failed: {error}")
             return False
@@ -151,6 +157,7 @@ def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
             except BackendUnavailableError:
                 if process.poll() is not None:
                     _log(f"backend autostart exited with code {process.returncode}")
+                    _autostart_process = None
                     return False
                 time.sleep(0.4)
         _log("backend autostart timed out")

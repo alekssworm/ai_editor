@@ -490,6 +490,72 @@ def _color_match_frame(frame_rgb, ref_rgb, mask_L, *, max_shift: int = 20):
     return Image.fromarray(fr2, mode="RGB")
 
 
+def _effect_profile_id(card: Optional[Dict[str, Any]]) -> str:
+    card = card or {}
+    main = card.get("main") or {}
+    raw = card.get("preset_id") or main.get("key") or main.get("name") or "default"
+    value = str(raw).strip().lower().replace(" ", "_")
+    if "still" in value or "calm" in value:
+        return "still_water"
+    if "waterfall" in value:
+        return "waterfall"
+    if "fast" in value and "river" in value:
+        return "fast_river"
+    if "river" in value:
+        return "river"
+    return value
+
+
+def _structure_preservation_profile(profile_id: str) -> tuple[float, float, float]:
+    """Return low-frequency mix, detail mix and maximum per-channel change."""
+    profiles = {
+        # Calm water should move as texture, not be re-painted by SVD.
+        "still_water": (0.03, 0.22, 18.0),
+        "river": (0.08, 0.36, 30.0),
+        "fast_river": (0.12, 0.46, 40.0),
+        "waterfall": (0.18, 0.56, 52.0),
+    }
+    return profiles.get(profile_id, (0.10, 0.42, 36.0))
+
+
+def _preserve_reference_structure(
+    frame_rgb,
+    reference_rgb,
+    *,
+    low_frequency_mix: float,
+    detail_mix: float,
+    max_change: float,
+):
+    """Suppress SVD hallucinations while retaining animated texture changes."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    frame = frame_rgb.convert("RGB")
+    reference = reference_rgb.convert("RGB")
+    if frame.size != reference.size:
+        frame = frame.resize(reference.size, getattr(Image, "Resampling", Image).LANCZOS)
+
+    radius = min(12.0, max(2.0, min(reference.size) / 24.0))
+    frame_arr = np.array(frame, dtype=np.float32)
+    reference_arr = np.array(reference, dtype=np.float32)
+    frame_low = np.array(
+        frame.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32
+    )
+    reference_low = np.array(
+        reference.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32
+    )
+
+    low_delta = frame_low - reference_low
+    detail_delta = (frame_arr - frame_low) - (reference_arr - reference_low)
+    delta = (
+        low_delta * float(low_frequency_mix)
+        + detail_delta * float(detail_mix)
+    )
+    delta = np.clip(delta, -float(max_change), float(max_change))
+    result = np.clip(reference_arr + delta, 0, 255).astype(np.uint8)
+    return Image.fromarray(result, mode="RGB")
+
+
 def _temporal_smooth_frames(frames_rgb, mask_L, *, strength: float = 0.15):
     """Simple EMA smoothing inside mask to reduce flicker."""
     import numpy as np
@@ -754,26 +820,38 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     if not os.path.isdir(pieces_dir_path):
         pieces_dir_path = ""
 
-    # --- init SVD pipeline and base frames ---
+    # --- initialize base frames; load the heavy model only on a cache miss ---
     job["state"] = "running"
-    job["progress"] = {"stage": "loading_pipeline", "current": 0, "total": len(shapes)}
-    _append_job_log(job, "loading SVD pipeline (first time may take long)")
+    pipe = None
 
-    import torch
-    cuda_available = torch.cuda.is_available()
-    allow_cpu = os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    if not cuda_available and not allow_cpu:
-        raise RuntimeError(
-            "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
-            "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
-        )
-    device = "cuda" if cuda_available else "cpu"
-    pipe = _load_svd_pipeline(device=device)
-    _check_cancelled(job)
+    def get_svd_pipe():
+        nonlocal pipe
+        if pipe is not None:
+            return pipe
+        job["progress"] = {
+            "stage": "loading_pipeline",
+            "current": 0,
+            "total": len(shapes),
+        }
+        _append_job_log(job, "loading SVD pipeline (first time may take long)")
+
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+        allow_cpu = os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if not cuda_available and not allow_cpu:
+            raise RuntimeError(
+                "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
+                "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
+            )
+        device = "cuda" if cuda_available else "cpu"
+        pipe = _load_svd_pipeline(device=device)
+        _check_cancelled(job)
+        return pipe
 
     from PIL import Image, ImageFilter
     import numpy as np
@@ -997,7 +1075,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
                 return callback_kwargs
 
             frames_piece = _svd_generate_frames(
-                pipe,
+                get_svd_pipe(),
                 patch_cond,
                 fps=fps,
                 num_frames=num_frames,
@@ -1032,6 +1110,29 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
                     _prune_layer_cache(os.path.dirname(cpath))
                 except Exception:
                     pass
+
+        profile_ids = [
+            _effect_profile_id(cards_by_id.get(sid)) for _shape, sid, _alpha in entries
+        ]
+        profiles = [_structure_preservation_profile(value) for value in profile_ids]
+        low_mix = min(profile[0] for profile in profiles)
+        detail_mix = min(profile[1] for profile in profiles)
+        max_change = min(profile[2] for profile in profiles)
+        _append_job_log(
+            job,
+            f"structure preservation: profile={','.join(sorted(set(profile_ids)))} "
+            f"low={low_mix:.2f} detail={detail_mix:.2f}",
+        )
+        frames_piece = [
+            _preserve_reference_structure(
+                frame,
+                patch,
+                low_frequency_mix=low_mix,
+                detail_mix=detail_mix,
+                max_change=max_change,
+            )
+            for frame in frames_piece
+        ]
 
         # blend back
         for t_idx in range(num_frames):
