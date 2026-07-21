@@ -1,15 +1,60 @@
 import os
 import json
-from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem
+from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem, QMessageBox
 from PySide6.QtGui import QImage, QPainter, Qt, QPainterPath
 from draw_tools import SelectableCircleItem, ResizableRectItem, ShapeItem
 from draw_tools import SelectablePolygonItem
 from effect_engine.project import PROJECT_SCHEMA_VERSION, serialize_flow_directions
 
-def save_outputs(self):
+
+def _write_json_atomic(path, data):
+    temp_path = path + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as output:
+            json.dump(data, output, ensure_ascii=False, indent=4)
+            output.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
-    folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
+def save_outputs(self, folder=None):
+    """Save the complete editor project and report success/failure in the UI."""
+    try:
+        shapes_json = _save_outputs_impl(self, folder=folder)
+    except Exception as error:
+        print(f"[SAVE] error: {error}")
+        if hasattr(self, "statusBar"):
+            self.statusBar().showMessage("Save project: ошибка", 8000)
+        QMessageBox.critical(
+            self,
+            "Save project",
+            f"Не удалось сохранить проект:\n{error}",
+        )
+        return None
+
+    if not shapes_json:
+        return None
+    if hasattr(self, "statusBar"):
+        self.statusBar().showMessage(f"Project saved: {shapes_json}", 8000)
+    QMessageBox.information(
+        self,
+        "Save project",
+        f"Проект сохранён:\n{shapes_json}",
+    )
+    return shapes_json
+
+
+def _save_outputs_impl(self, folder=None):
+
+
+    folder = folder or getattr(self, "current_project_folder", None)
+    if not folder:
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
     if not folder:
         print("❌ Сохранение отменено.")
         return
@@ -19,8 +64,7 @@ def save_outputs(self):
 
     background = next((item for item in self.scene.items() if isinstance(item, QGraphicsPixmapItem)), None)
     if not background:
-        print("❌ Фон не найден.")
-        return
+        raise RuntimeError("Фон не найден. Сначала импортируйте изображение.")
 
     original_image_path = background.data(Qt.UserRole) if background.data(Qt.UserRole) else ""
     original_image = background.pixmap().toImage()
@@ -32,10 +76,8 @@ def save_outputs(self):
 
     # ✅ сохраняем фон рядом с проектом (относительный путь в shapes.json)
     bg_out_path = os.path.join(folder, 'background.png')
-    try:
-        original_image.save(bg_out_path)
-    except Exception as e:
-        print('⚠ Не удалось сохранить background.png:', e)
+    if not original_image.save(bg_out_path):
+        raise RuntimeError(f"Не удалось сохранить background.png: {bg_out_path}")
     bg_for_json = 'background.png'
 
     shape_data = []
@@ -309,45 +351,51 @@ def save_outputs(self):
 
         index += 1
 
-    without_shape_image.save(os.path.join(folder, "without_shape_area.png"))
-
-    with open(os.path.join(folder, "shapes.json"), "w", encoding="utf-8") as f:
-        if hasattr(self, "ai_window"):
-            shape_cards_data = self.ai_window.collect_shape_cards_data()
-        else:
-            shape_cards_data = []
-        # ✅ чистим shape_cards: оставляем только карточки реально сохранённых фигур
-        valid_ids = set()
-        for s in shape_data:
-            try:
-                valid_ids.add(int(s.get('id')))
-            except Exception:
-                pass
-
-        filtered_cards = []
-        for c in shape_cards_data:
-            if not isinstance(c, dict):
-                continue
-            try:
-                cid = int(c.get('id'))
-            except Exception:
-                continue
-            if cid in valid_ids:
-                filtered_cards.append(c)
-        shape_cards_data = filtered_cards
-        flow_directions = serialize_flow_directions(
-            getattr(self, "flow_directions", {}), valid_ids
+    without_shape_path = os.path.join(folder, "without_shape_area.png")
+    if not without_shape_image.save(without_shape_path):
+        raise RuntimeError(
+            f"Не удалось сохранить without_shape_area.png: {without_shape_path}"
         )
-        json.dump({
-            'schema_version': PROJECT_SCHEMA_VERSION,
-            'background': bg_for_json,
-            'shapes': shape_data,
-            'shape_cards': shape_cards_data,
-            'flow_directions': flow_directions,
-        }, f, indent=4)
+
+    project_path = os.path.join(folder, "shapes.json")
+    if hasattr(self, "ai_window"):
+        shape_cards_data = self.ai_window.collect_shape_cards_data()
+    else:
+        shape_cards_data = []
+    # Keep only cards belonging to shapes that were actually exported.
+    valid_ids = set()
+    for shape in shape_data:
+        try:
+            valid_ids.add(int(shape.get("id")))
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    filtered_cards = []
+    for card in shape_cards_data:
+        if not isinstance(card, dict):
+            continue
+        try:
+            card_id = int(card.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if card_id in valid_ids:
+            filtered_cards.append(card)
+    flow_directions = serialize_flow_directions(
+        getattr(self, "flow_directions", {}), valid_ids
+    )
+    _write_json_atomic(
+        project_path,
+        {
+            "schema_version": PROJECT_SCHEMA_VERSION,
+            "background": bg_for_json,
+            "shapes": shape_data,
+            "shape_cards": filtered_cards,
+            "flow_directions": flow_directions,
+        },
+    )
 
     self.current_project_folder = folder
-    self.current_shapes_json_path = os.path.join(folder, "shapes.json")
+    self.current_shapes_json_path = project_path
 
     # Передаём пути в AI panel, чтобы render работал без диалогов
     if hasattr(self, "ai_window"):
@@ -361,4 +409,5 @@ def save_outputs(self):
         except Exception:
             pass
 
-    print(f"✅ Сохранено {index - 1} фигур и итоговое изображение.")
+    print(f"[SAVE] Сохранено {index - 1} фигур: {self.current_shapes_json_path}")
+    return self.current_shapes_json_path

@@ -1,5 +1,14 @@
 # backend_async.py
+import os
+
 from PySide6.QtCore import QObject, Signal, Slot, QThread
+
+
+ASYNC_DEBUG = os.environ.get("AI_BACKEND_ASYNC_DEBUG", "0") in {
+    "1",
+    "true",
+    "True",
+}
 
 
 class BackendWorker(QObject):
@@ -56,6 +65,8 @@ def run_in_thread(owner, func, on_ok, on_err, *args, **kwargs):
     worker.moveToThread(thread)
 
     def _dbg(msg: str):
+        if not ASYNC_DEBUG:
+            return
         try:
             print(f"[DEBUG] {msg}")
         except Exception:

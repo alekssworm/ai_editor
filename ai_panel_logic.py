@@ -1,6 +1,8 @@
 import json
 import math
 import os
+import tempfile
+import time
 import traceback
 from typing import Optional, Tuple, Callable
 
@@ -8,7 +10,8 @@ from PySide6.QtCore import QStringListModel, QThread, QObject, Signal, Qt, QTime
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
-    QMainWindow, QGraphicsScene, QGraphicsView, QLabel, QFrame, QSizePolicy, QFormLayout, QFileDialog, QMessageBox
+    QMainWindow, QGraphicsScene, QGraphicsView, QLabel, QFrame, QSizePolicy,
+    QFormLayout, QFileDialog, QMessageBox, QProgressBar
 )
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
 
@@ -558,6 +561,25 @@ class AIWindow(QMainWindow):
             self.ui.pushButton.setToolTip(
                 "Stable Video Diffusion render; requires backend_server.py"
             )
+        if hasattr(self.ui, "pushButton_9"):
+            self.ui.pushButton_9.setText("Save effects")
+            self.ui.pushButton_9.setToolTip(
+                "Update effect settings in the current shapes.json project"
+            )
+            self.ui.pushButton_9.clicked.connect(self.save_effects_to_project)
+
+        self.render_status_label = QLabel("AI: готов к работе", self)
+        self.render_status_label.setMinimumWidth(260)
+        self.render_status_label.setToolTip("Текущий этап AI-рендера")
+        self.render_progress_bar = QProgressBar(self)
+        self.render_progress_bar.setFixedWidth(180)
+        self.render_progress_bar.setTextVisible(True)
+        self.render_progress_bar.hide()
+        top_layout = getattr(self.ui, "horizontalLayout_3", None)
+        if top_layout is not None:
+            insert_at = max(0, top_layout.count() - 1)
+            top_layout.insertWidget(insert_at, self.render_status_label)
+            top_layout.insertWidget(insert_at + 1, self.render_progress_bar)
 
         self.scene = QGraphicsScene(self)
         self.ui.graphicsView.setRenderHint(QPainter.Antialiasing)
@@ -586,6 +608,8 @@ class AIWindow(QMainWindow):
         self._svd_job_id = None
         self._svd_poll_in_flight = False
         self._svd_status_failures = 0
+        self._svd_started_at = None
+        self._last_svd_progress_key = None
         self._svd_timer = QTimer(self)
         self._svd_timer.timeout.connect(self._poll_svd_status)
 
@@ -612,7 +636,11 @@ class AIWindow(QMainWindow):
             self.ui.label_14.setText(str(self.selected_shape_id))
 
     def _set_render_status(self, text: str, timeout: int = 0) -> None:
-        self.statusBar().showMessage(str(text), int(timeout))
+        message = str(text)
+        self.statusBar().showMessage(message, int(timeout))
+        if hasattr(self, "render_status_label"):
+            self.render_status_label.setText(message)
+            self.render_status_label.setToolTip(message)
 
     def clear_shape_cards(self):
         """Reset cards when a new image or project replaces the current scene."""
@@ -632,6 +660,10 @@ class AIWindow(QMainWindow):
         self._svd_job_id = None
         self._svd_poll_in_flight = False
         self._svd_status_failures = 0
+        self._svd_started_at = None
+        self._last_svd_progress_key = None
+        if hasattr(self, "render_progress_bar"):
+            self.render_progress_bar.hide()
         self._svd_timer.stop()
 
     def remove_shape_card(self, shape_id):
@@ -945,6 +977,83 @@ class AIWindow(QMainWindow):
 
         return shape_cards_data
 
+    def save_effects_to_project(self):
+        """Atomically update only AI effect cards in the current project file."""
+        shapes_json = self.render_shapes_json_path
+        if not shapes_json or not os.path.isfile(shapes_json):
+            shapes_json, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select shapes.json",
+                "",
+                "JSON (*.json)",
+            )
+            if not shapes_json:
+                return None
+
+        temp_path = None
+        try:
+            with open(shapes_json, "r", encoding="utf-8") as source:
+                project = json.load(source)
+            if not isinstance(project, dict):
+                raise ValueError("shapes.json должен содержать JSON-объект")
+
+            valid_ids = set()
+            for shape in project.get("shapes") or []:
+                try:
+                    valid_ids.add(int(shape.get("id")))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+
+            cards = []
+            for card in self.collect_shape_cards_data():
+                try:
+                    card_id = int(card.get("id"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if card_id in valid_ids:
+                    cards.append(card)
+            project["shape_cards"] = cards
+
+            project_dir = os.path.dirname(os.path.abspath(shapes_json))
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=project_dir,
+                prefix=".shapes-",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = temp_file.name
+                json.dump(project, temp_file, ensure_ascii=False, indent=4)
+                temp_file.write("\n")
+            os.replace(temp_path, shapes_json)
+            temp_path = None
+        except Exception as error:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            self._set_render_status("Save effects: ошибка", 8000)
+            QMessageBox.critical(
+                self,
+                "Save effects",
+                f"Не удалось сохранить настройки эффектов:\n{error}",
+            )
+            return None
+
+        self.render_shapes_json_path = shapes_json
+        self._set_render_status(
+            f"Save effects: сохранено {len(cards)} карточек",
+            8000,
+        )
+        QMessageBox.information(
+            self,
+            "Save effects",
+            f"Настройки эффектов сохранены:\n{shapes_json}",
+        )
+        return shapes_json
+
     # ---------------------------
     # Render button logic
     # ---------------------------
@@ -1015,6 +1124,12 @@ class AIWindow(QMainWindow):
             return
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(False)
+        self._svd_started_at = time.monotonic()
+        self._last_svd_progress_key = None
+        if hasattr(self, "render_progress_bar"):
+            self.render_progress_bar.setRange(0, 0)
+            self.render_progress_bar.setFormat("Проверка backend...")
+            self.render_progress_bar.show()
         self._set_render_status("AI render: проверка backend...")
 
         from backend_async import run_in_thread
@@ -1045,7 +1160,10 @@ class AIWindow(QMainWindow):
             self._svd_job_id = str(job_id)
             self._svd_status_failures = 0
             self._svd_poll_in_flight = False
-            self._set_render_status(f"AI render: queued ({self._svd_job_id})")
+            if hasattr(self, "render_progress_bar"):
+                self.render_progress_bar.setRange(0, 0)
+                self.render_progress_bar.setFormat("В очереди...")
+            self._set_render_status("AI: задание поставлено в очередь")
             try:
                 print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
             except Exception:
@@ -1056,6 +1174,9 @@ class AIWindow(QMainWindow):
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
             self._svd_job_id = None
+            self._svd_started_at = None
+            if hasattr(self, "render_progress_bar"):
+                self.render_progress_bar.hide()
             self._set_render_status("AI render: backend не готов", 8000)
             try:
                 print(f"[DEBUG] [RENDER] error: {msg}")
@@ -1125,8 +1246,11 @@ class AIWindow(QMainWindow):
 
         self._svd_timer.stop()
         self._svd_job_id = None
+        self._svd_started_at = None
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(True)
+        if hasattr(self, "render_progress_bar"):
+            self.render_progress_bar.hide()
         self._set_render_status("AI render: соединение потеряно", 8000)
         QMessageBox.warning(self, "AI render", str(message))
 
@@ -1134,16 +1258,54 @@ class AIWindow(QMainWindow):
         self._svd_status_failures = 0
         state = str(status.get("state") or "unknown")
         prog = status.get("progress") or {}
-        stage = prog.get("stage")
+        stage = str(prog.get("stage") or "")
         step = prog.get("step")
         steps = prog.get("steps")
-        step_suffix = f" {step}/{steps}" if step is not None and steps else ""
-        stage_suffix = f" ({stage}{step_suffix})" if stage else ""
-        self._set_render_status(f"AI render: {state}{stage_suffix}")
+        current = prog.get("current")
+        total = prog.get("total")
+        elapsed = (
+            max(0, int(time.monotonic() - self._svd_started_at))
+            if self._svd_started_at is not None
+            else 0
+        )
+        elapsed_text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        stage_labels = {
+            "queued": "в очереди",
+            "loading_pipeline": "загрузка AI-модели",
+            "rendering": "генерация кадров",
+            "decoding": "декодирование кадров",
+            "postprocessing": "постобработка",
+            "encoding": "сохранение MP4",
+            "done": "готово",
+        }
+        base_stage_text = stage_labels.get(stage, stage or state)
+        stage_text = base_stage_text
+        if step is not None and steps:
+            stage_text += f" {step}/{steps}"
+        if current is not None and total and int(total) > 1:
+            stage_text += f" • слой {current}/{total}"
+        status_text = f"AI: {stage_text} • {elapsed_text}"
+        self._set_render_status(status_text)
+
+        if hasattr(self, "render_progress_bar"):
+            self.render_progress_bar.show()
+            if step is not None and steps:
+                self.render_progress_bar.setRange(0, int(steps))
+                self.render_progress_bar.setValue(int(step))
+                self.render_progress_bar.setFormat(f"{base_stage_text} — %v/%m")
+            else:
+                self.render_progress_bar.setRange(0, 0)
+                self.render_progress_bar.setFormat(stage_text)
+
+        progress_key = (state, stage, step, steps, current, total)
+        if progress_key != self._last_svd_progress_key:
+            print(f"[AI RENDER] {status_text}")
+            self._last_svd_progress_key = progress_key
 
         if state == "done":
             self._svd_timer.stop()
             self._svd_job_id = None
+            self._svd_started_at = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
             result = status.get("result") or {}
@@ -1158,12 +1320,17 @@ class AIWindow(QMainWindow):
             except Exception:
                 pass
             self._set_render_status("AI render: готово", 8000)
+            if hasattr(self, "render_progress_bar"):
+                self.render_progress_bar.setRange(0, 1)
+                self.render_progress_bar.setValue(1)
+                self.render_progress_bar.setFormat("Готово")
             QMessageBox.information(self, "Render", f"Saved:\n{output_path}")
             return
 
         if state == "error":
             self._svd_timer.stop()
             self._svd_job_id = None
+            self._svd_started_at = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
             err = status.get("error") or "unknown error"
@@ -1172,6 +1339,8 @@ class AIWindow(QMainWindow):
             except Exception:
                 pass
             self._set_render_status("AI render: ошибка", 8000)
+            if hasattr(self, "render_progress_bar"):
+                self.render_progress_bar.hide()
             QMessageBox.critical(self, "Render error", str(err))
 
     def _start_render_thread(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):

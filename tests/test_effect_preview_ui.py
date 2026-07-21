@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -53,6 +54,8 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
         window = MainWindow()
         self.assertEqual(window.ui.preview_button.text(), "Local preview")
+        self.assertEqual(window.ui.save_button.text(), "Save project")
+        self.assertEqual(window.ai_window.ui.pushButton_9.text(), "Save effects")
         window.close()
 
     def test_ai_render_status_does_not_overwrite_selected_shape(self) -> None:
@@ -101,8 +104,60 @@ class EffectPreviewDialogTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("rendering 7/25", panel.statusBar().currentMessage())
+        self.assertIn("7/25", panel.statusBar().currentMessage())
+        self.assertEqual(
+            panel.render_status_label.text(),
+            panel.statusBar().currentMessage(),
+        )
+        self.assertFalse(panel.render_progress_bar.isHidden())
+        self.assertEqual(panel.render_progress_bar.value(), 7)
         window.close()
+
+    def test_ai_save_updates_only_effect_cards_atomically(self) -> None:
+        from editor import MainWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "shapes.json"
+            original = {
+                "schema_version": 2,
+                "background": "background.png",
+                "shapes": [{"id": 22, "type": "Rectangle"}],
+                "shape_cards": [],
+                "flow_directions": {"22": [1.0, 0.0]},
+                "custom_field": "preserve me",
+            }
+            project_path.write_text(
+                json.dumps(original, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            window = MainWindow()
+            panel = window.ai_window
+            panel.add_shape_card(22, "Rectangle", "#00aaff")
+            panel.restore_shape_cards_data(
+                [
+                    {
+                        "id": 22,
+                        "tool_type": "water",
+                        "preset_id": "still_water",
+                        "main": None,
+                        "sub": [],
+                    }
+                ]
+            )
+            panel.set_render_sources(shapes_json_path=str(project_path))
+
+            with patch("ai_panel_logic.QMessageBox.information") as information:
+                panel.ui.pushButton_9.click()
+
+            saved = json.loads(project_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["custom_field"], "preserve me")
+            self.assertEqual(saved["flow_directions"], {"22": [1.0, 0.0]})
+            self.assertEqual(saved["shape_cards"][0]["id"], 22)
+            self.assertEqual(saved["shape_cards"][0]["preset_id"], "still_water")
+            self.assertFalse(list(Path(directory).glob(".shapes-*.tmp")))
+            information.assert_called_once()
+            window.close()
 
     def test_offline_ai_render_restores_ui_with_short_message(self) -> None:
         import backend_client

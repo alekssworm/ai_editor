@@ -67,6 +67,22 @@ class BackendClientTests(unittest.TestCase):
             ):
                 backend_client.ensure_backend_ready()
 
+    def test_status_poll_is_quiet_in_debug_log(self) -> None:
+        response = Mock(status_code=200)
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "state": "running",
+            "progress": {"stage": "rendering", "step": 8, "steps": 25},
+        }
+        with (
+            patch.object(backend_client._session, "request", return_value=response),
+            patch("builtins.print") as output,
+        ):
+            status = backend_client.get_svd_status("job-8", timeout=0.1)
+
+        self.assertEqual(status["progress"]["step"], 8)
+        output.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

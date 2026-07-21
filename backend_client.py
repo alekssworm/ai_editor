@@ -65,11 +65,18 @@ def _log(msg: str, data: Any = None) -> None:
                 f.write(dump + "\n")
         except Exception:
             pass
-def _req(method: str, path: str, *, json_body: Any = None, timeout: float = 30.0) -> Dict[str, Any]:
+def _req(
+    method: str,
+    path: str,
+    *,
+    json_body: Any = None,
+    timeout: float = 30.0,
+    quiet: bool = False,
+) -> Dict[str, Any]:
     url = f"{BASE}{path}"
     rid = uuid.uuid4().hex[:8]
 
-    if DEBUG:
+    if DEBUG and not quiet:
         try:
             print(f"[DEBUG] [CLIENT {rid}] {method} {url}")
             if isinstance(json_body, dict):
@@ -96,7 +103,7 @@ def _req(method: str, path: str, *, json_body: Any = None, timeout: float = 30.0
     except requests.RequestException as error:
         raise BackendRequestError(f"Ошибка запроса к AI backend: {error}") from error
 
-    if DEBUG:
+    if DEBUG and not quiet:
         print(f"[DEBUG] [CLIENT {rid}] RESP {response.status_code}")
 
     try:
@@ -211,4 +218,4 @@ def start_svd_render_checked(
 
 
 def get_svd_status(job_id: str, timeout: float = 5.0) -> Dict[str, Any]:
-    return _req("GET", f"/svd/status/{job_id}", timeout=timeout)
+    return _req("GET", f"/svd/status/{job_id}", timeout=timeout, quiet=True)

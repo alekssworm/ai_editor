@@ -76,6 +76,10 @@ class MainWindow(QMainWindow):
         self.ui.Cursor.clicked.connect(lambda: deactivate_drawing_mode(self))
         self.ui.cursor_Button.clicked.connect(lambda: deactivate_drawing_mode(self))
         self.ui.Circle.clicked.connect(lambda: activate_circle_mode(self))
+        self.ui.save_button.setText("Save project")
+        self.ui.save_button.setToolTip(
+            "Save background, shapes, pieces, flow directions and AI effects"
+        )
         self.ui.save_button.clicked.connect(lambda: save_outputs(self))
         self.ui.Resizable_button.clicked.connect(lambda: show_all_handles(self))
         self.ui.preview_button.setText("Local preview")
