@@ -706,7 +706,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
     # --- group shapes into layers (stage2) ---
     layers: Dict[tuple, list[tuple[Dict[str, Any], int, float]]] = {}
-    project_directions = project.get("flow_directions") or {}
+    project_directions = data.get("flow_directions") or {}
     if not isinstance(project_directions, dict):
         project_directions = {}
     for idx, sh in enumerate(shapes, start=1):

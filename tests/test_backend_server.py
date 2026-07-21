@@ -1,5 +1,11 @@
+import json
 import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import backend_server
 from PIL import Image
@@ -98,6 +104,81 @@ class BackendServerTests(unittest.TestCase):
             [frame.tobytes() for frame in first],
             [frame.tobytes() for frame in second],
         )
+
+    def test_render_job_reads_saved_project_flow_directions(self) -> None:
+        class DummyWriter:
+            def __init__(self):
+                self.frames = []
+                self.closed = False
+
+            def append_data(self, frame):
+                self.frames.append(frame)
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            background = base / "background.png"
+            Image.new("RGB", (24, 20), "blue").save(background)
+            project_path = base / "shapes.json"
+            project_path.write_text(
+                json.dumps(
+                    {
+                        "background": "background.png",
+                        "shapes": [
+                            {
+                                "id": 3,
+                                "type": "Rectangle",
+                                "x": 3,
+                                "y": 3,
+                                "width": 14,
+                                "height": 12,
+                            }
+                        ],
+                        "shape_cards": [],
+                        "flow_directions": {"3": {"x": 0, "y": 1}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            request = backend_server.RenderRequest(
+                shapes_json=str(project_path),
+                out_mp4=str(base / "result.mp4"),
+                fps=2,
+                num_frames=2,
+                enable_cache=False,
+            )
+            job_id = "flow-direction-regression"
+            backend_server._jobs[job_id] = {
+                "job_id": job_id,
+                "state": "queued",
+                "progress": {},
+                "log": [],
+            }
+            writer = DummyWriter()
+            fake_torch = SimpleNamespace(
+                cuda=SimpleNamespace(is_available=lambda: False)
+            )
+
+            def fake_frames(_pipe, image, **kwargs):
+                return [image.copy() for _ in range(kwargs["num_frames"])]
+
+            try:
+                with (
+                    patch.dict(os.environ, {"AI_BACKEND_ALLOW_CPU": "1"}),
+                    patch.dict(sys.modules, {"torch": fake_torch}),
+                    patch("backend_server._load_svd_pipeline", return_value=object()),
+                    patch("backend_server._svd_generate_frames", side_effect=fake_frames),
+                    patch("imageio.get_writer", return_value=writer),
+                ):
+                    backend_server._render_svd_job(job_id, request)
+
+                self.assertEqual(backend_server._jobs[job_id]["state"], "done")
+                self.assertEqual(len(writer.frames), 2)
+                self.assertTrue(writer.closed)
+            finally:
+                backend_server._jobs.pop(job_id, None)
 
 
 if __name__ == "__main__":

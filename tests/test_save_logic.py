@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QColor, QImage, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QGraphicsPixmapItem
 
-from draw_tools import ResizableRectItem
+from draw_tools import ResizableRectItem, SelectablePolygonItem
 from save_logic import save_outputs
 
 
@@ -55,6 +55,86 @@ class SaveLogicTests(unittest.TestCase):
             folder_dialog.assert_not_called()
             information.assert_called_once()
             critical.assert_not_called()
+            window.close()
+
+    def test_hidden_fill_does_not_change_saved_geometry_or_color(self) -> None:
+        from editor import MainWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            window = MainWindow()
+            background_pixmap = QPixmap(96, 72)
+            background_pixmap.fill(QColor("#204060"))
+            window.scene.addItem(QGraphicsPixmapItem(background_pixmap))
+            shape = ResizableRectItem(
+                QRectF(10, 12, 40, 20), QColor("#00aaff")
+            )
+            shape.set_fill_visibility(False)
+            window.scene.addItem(shape)
+            window.shape_registry[7] = shape
+            window.shape_parents[7] = None
+
+            with (
+                patch("save_logic.QMessageBox.information"),
+                patch("save_logic.QMessageBox.critical") as critical,
+            ):
+                result = save_outputs(window, directory)
+
+            self.assertIsNotNone(result)
+            critical.assert_not_called()
+
+            project = json.loads(
+                (Path(directory) / "shapes.json").read_text(encoding="utf-8")
+            )
+            saved = project["shapes"][0]
+            self.assertEqual(
+                (saved["x"], saved["y"], saved["width"], saved["height"]),
+                (10, 12, 40, 20),
+            )
+            self.assertEqual(saved["color"], "#00aaff")
+            window.close()
+
+    def test_moved_polygon_piece_uses_scene_coordinates(self) -> None:
+        from editor import MainWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            window = MainWindow()
+            background_pixmap = QPixmap(120, 90)
+            background_pixmap.fill(QColor("#407020"))
+            window.scene.addItem(QGraphicsPixmapItem(background_pixmap))
+            polygon = SelectablePolygonItem(
+                QPolygonF(
+                    [QPointF(10, 10), QPointF(40, 10), QPointF(10, 40)]
+                ),
+                QColor("#ff8800"),
+            )
+            polygon.setPos(45, 20)
+            window.scene.addItem(polygon)
+            window.shape_registry[8] = polygon
+            window.shape_parents[8] = None
+
+            with (
+                patch("save_logic.QMessageBox.information"),
+                patch("save_logic.QMessageBox.critical") as critical,
+            ):
+                result = save_outputs(window, directory)
+
+            self.assertIsNotNone(result)
+            critical.assert_not_called()
+
+            project = json.loads(
+                (Path(directory) / "shapes.json").read_text(encoding="utf-8")
+            )
+            points = project["shapes"][0]["points"]
+            self.assertEqual(points[0], {"x": 55, "y": 30})
+            piece = QImage(str(Path(directory) / "pieces" / "shape_8.png"))
+            self.assertFalse(piece.isNull())
+            self.assertTrue(
+                any(
+                    piece.pixelColor(x, y).alpha() > 0
+                    for y in range(piece.height())
+                    for x in range(piece.width())
+                )
+            )
             window.close()
 
 
