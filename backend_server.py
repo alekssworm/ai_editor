@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import logging
 import math
 import os
@@ -55,6 +56,17 @@ def _now() -> float:
     return time.time()
 
 
+_OWNER_TOKEN = os.environ.get("AI_BACKEND_OWNER_TOKEN", "").strip()
+try:
+    _IDLE_TIMEOUT = max(
+        0.0, float(os.environ.get("AI_BACKEND_IDLE_TIMEOUT", "0") or 0)
+    )
+except ValueError:
+    _IDLE_TIMEOUT = 0.0
+_last_activity = _now()
+_shutdown_scheduled = False
+
+
 def _append_job_log(job: Dict[str, Any], msg: str) -> None:
     job["updated_at"] = _now()
     job.setdefault("log", [])
@@ -62,6 +74,55 @@ def _append_job_log(job: Dict[str, Any], msg: str) -> None:
     # keep last 300 lines
     if len(job["log"]) > 300:
         job["log"] = job["log"][-300:]
+
+
+def _active_jobs() -> list[Dict[str, Any]]:
+    with _jobs_lock:
+        return [
+            job
+            for job in _jobs.values()
+            if job.get("state") not in {"done", "error", "cancelled"}
+        ]
+
+
+def _schedule_owned_shutdown(max_wait: float = 30.0) -> None:
+    """Cancel active work, then terminate this owner-scoped backend process."""
+    global _shutdown_scheduled
+    if _shutdown_scheduled:
+        return
+    _shutdown_scheduled = True
+
+    def worker():
+        deadline = time.monotonic() + max(1.0, float(max_wait))
+        while time.monotonic() < deadline:
+            active = _active_jobs()
+            if not active:
+                break
+            for job in active:
+                job["cancel_requested"] = True
+            time.sleep(0.2)
+        # Give the HTTP response time to leave uvicorn before exiting.
+        time.sleep(0.2)
+        os._exit(0)
+
+    threading.Thread(target=worker, name="backend-shutdown", daemon=True).start()
+
+
+def _start_idle_watchdog() -> None:
+    if not _OWNER_TOKEN or _IDLE_TIMEOUT <= 0:
+        return
+
+    def worker():
+        while True:
+            time.sleep(min(5.0, max(1.0, _IDLE_TIMEOUT / 4.0)))
+            if _active_jobs():
+                continue
+            if _now() - _last_activity >= _IDLE_TIMEOUT:
+                log.info("owned backend idle for %.0fs; shutting down", _IDLE_TIMEOUT)
+                _schedule_owned_shutdown(max_wait=2.0)
+                return
+
+    threading.Thread(target=worker, name="backend-idle", daemon=True).start()
 
 
 # -----------------------
@@ -173,6 +234,23 @@ def _load_svd_pipeline(device: str = "cuda"):
 
     _svd_pipe = pipe
     return pipe
+
+
+def _svd_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return "cpu"
+    raise RuntimeError(
+        "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
+        "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
+    )
 
 
 def _round_to_multiple(x: int, m: int = 64) -> int:
@@ -835,21 +913,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
         }
         _append_job_log(job, "loading SVD pipeline (first time may take long)")
 
-        import torch
-
-        cuda_available = torch.cuda.is_available()
-        allow_cpu = os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
-        if not cuda_available and not allow_cpu:
-            raise RuntimeError(
-                "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
-                "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
-            )
-        device = "cuda" if cuda_available else "cpu"
-        pipe = _load_svd_pipeline(device=device)
+        pipe = _load_svd_pipeline(device=_svd_device())
         _check_cancelled(job)
         return pipe
 
@@ -1204,6 +1268,8 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 # -----------------------
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    global _last_activity
+    _last_activity = _now()
     rid = uuid.uuid4().hex[:8]
     start = _now()
     try:
@@ -1252,6 +1318,16 @@ def gpu():
         return {"cuda_available": cuda, "device": dev, "torch": torch.__version__}
     except Exception as e:
         return {"cuda_available": False, "device": None, "error": str(e)}
+
+
+@app.post("/shutdown")
+def shutdown_owned_backend(request: Request):
+    """Stop only an auto-started backend whose owner presents its secret token."""
+    provided = request.headers.get("x-ai-backend-owner", "")
+    if not _OWNER_TOKEN or not hmac.compare_digest(provided, _OWNER_TOKEN):
+        raise HTTPException(status_code=403, detail="Backend owner token rejected")
+    _schedule_owned_shutdown()
+    return {"ok": True, "state": "shutting_down"}
 
 
 @app.post("/svd/render")
@@ -1332,6 +1408,7 @@ def main() -> int:
 
     host = os.environ.get("AI_BACKEND_HOST", "0.0.0.0")
     port = int(os.environ.get("AI_BACKEND_PORT", "8000"))
+    _start_idle_watchdog()
     uvicorn.run(app, host=host, port=port, log_level=LOG_LEVEL.lower())
     return 0
 

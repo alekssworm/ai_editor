@@ -96,11 +96,41 @@ class BackendClientTests(unittest.TestCase):
                 side_effect=[unavailable, {"ok": True}],
             ),
             patch.object(backend_client.subprocess, "Popen", return_value=process) as popen,
+            patch.object(backend_client.atexit, "register"),
         ):
             started = backend_client.try_start_local_backend(wait_seconds=1)
 
         self.assertTrue(started)
         popen.assert_called_once()
+        backend_client._autostart_process = None
+        backend_client._autostart_token = None
+        backend_client._shutdown_registered = False
+
+    def test_owned_backend_shutdown_uses_token_and_waits_for_process(self) -> None:
+        process = Mock()
+        response = Mock(status_code=200)
+        backend_client._autostart_process = process
+        backend_client._autostart_token = "owner-secret"
+        try:
+            with patch.object(
+                backend_client._session,
+                "post",
+                return_value=response,
+            ) as post:
+                stopped = backend_client.shutdown_local_backend(timeout=1)
+
+            self.assertTrue(stopped)
+            post.assert_called_once_with(
+                f"{backend_client.BASE}/shutdown",
+                headers={"X-AI-Backend-Owner": "owner-secret"},
+                timeout=(0.75, 1.0),
+            )
+            process.wait.assert_called_once_with(timeout=1.0)
+            self.assertIsNone(backend_client._autostart_process)
+            self.assertIsNone(backend_client._autostart_token)
+        finally:
+            backend_client._autostart_process = None
+            backend_client._autostart_token = None
 
     def test_backend_ready_rejects_cpu_only_torch(self) -> None:
         with (

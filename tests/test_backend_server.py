@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -196,6 +195,27 @@ class BackendServerTests(unittest.TestCase):
         finally:
             backend_server._jobs.pop(job_id, None)
 
+    def test_shutdown_requires_matching_autostart_owner_token(self) -> None:
+        previous_token = backend_server._OWNER_TOKEN
+        backend_server._OWNER_TOKEN = "owner-secret"
+        try:
+            with patch("backend_server._schedule_owned_shutdown") as schedule:
+                result = backend_server.shutdown_owned_backend(
+                    SimpleNamespace(
+                        headers={"x-ai-backend-owner": "owner-secret"}
+                    )
+                )
+
+            self.assertTrue(result["ok"])
+            schedule.assert_called_once_with()
+            with self.assertRaises(backend_server.HTTPException) as raised:
+                backend_server.shutdown_owned_backend(
+                    SimpleNamespace(headers={"x-ai-backend-owner": "wrong"})
+                )
+            self.assertEqual(raised.exception.status_code, 403)
+        finally:
+            backend_server._OWNER_TOKEN = previous_token
+
     def test_layer_cache_is_atomic_and_pruned(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache_dir = Path(directory)
@@ -271,10 +291,6 @@ class BackendServerTests(unittest.TestCase):
                 "log": [],
             }
             writer = DummyWriter()
-            fake_torch = SimpleNamespace(
-                cuda=SimpleNamespace(is_available=lambda: False)
-            )
-
             def fake_frames(_pipe, image, **kwargs):
                 return [image.copy() for _ in range(kwargs["num_frames"])]
 
@@ -284,8 +300,7 @@ class BackendServerTests(unittest.TestCase):
 
             try:
                 with (
-                    patch.dict(os.environ, {"AI_BACKEND_ALLOW_CPU": "1"}),
-                    patch.dict(sys.modules, {"torch": fake_torch}),
+                    patch("backend_server._svd_device", return_value="cpu"),
                     patch("backend_server._load_svd_pipeline", return_value=object()),
                     patch("backend_server._svd_generate_frames", side_effect=fake_frames),
                     patch("imageio.get_writer", side_effect=fake_get_writer),
@@ -327,10 +342,6 @@ class BackendServerTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            fake_torch = SimpleNamespace(
-                cuda=SimpleNamespace(is_available=lambda: False)
-            )
-
             def fake_frames(_pipe, image, **kwargs):
                 return [image.copy() for _ in range(kwargs["num_frames"])]
 
@@ -355,8 +366,7 @@ class BackendServerTests(unittest.TestCase):
                 }
             try:
                 with (
-                    patch.dict(os.environ, {"AI_BACKEND_ALLOW_CPU": "1"}),
-                    patch.dict(sys.modules, {"torch": fake_torch}),
+                    patch("backend_server._svd_device", return_value="cpu"),
                     patch("backend_server._load_svd_pipeline", return_value=object()),
                     patch("backend_server._svd_generate_frames", side_effect=fake_frames),
                     patch("imageio.get_writer", side_effect=fake_writer),

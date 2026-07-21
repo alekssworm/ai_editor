@@ -1,6 +1,8 @@
 import sys
 import os
 
+import backend_client
+
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsScene,
@@ -126,6 +128,9 @@ class MainWindow(QMainWindow):
         self.ai_window.motion_changed.connect(self._sync_ai_motion)
         self.ai_window.project_sync_callback = self._sync_current_project
         self.ai_window.hide()  # окно создано (для фантомов), но не показано
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(backend_client.shutdown_local_backend)
 
         def open_ai():
             # прокидываем пути проекта в AI panel, чтобы render не спрашивал диалоги

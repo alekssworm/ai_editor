@@ -6,9 +6,11 @@ Usage:
   print(backend_client.gpu_info())
 """
 from __future__ import annotations
+import atexit
 import json
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 import threading
@@ -24,6 +26,8 @@ LOGFILE = os.environ.get("AI_BACKEND_CLIENT_LOG", os.path.join(os.getcwd(), "bac
 _session = requests.Session()
 _autostart_lock = threading.Lock()
 _autostart_process = None
+_autostart_token = None
+_shutdown_registered = False
 
 
 class BackendClientError(RuntimeError):
@@ -71,7 +75,7 @@ def _win_to_wsl_project_path(path: Path) -> str:
     return f"/mnt/{drive}/{suffix}"
 
 
-def _backend_launch_spec():
+def _backend_launch_spec(owner_token: str):
     """Return the preferred local backend command and its working directory."""
     project_dir = Path(__file__).resolve().parent
     if os.name == "nt":
@@ -86,6 +90,9 @@ def _backend_launch_spec():
                     "--cd",
                     _win_to_wsl_project_path(project_dir),
                     "--",
+                    "env",
+                    f"AI_BACKEND_OWNER_TOKEN={owner_token}",
+                    "AI_BACKEND_IDLE_TIMEOUT=90",
                     "./.venv-wsl/bin/python",
                     "backend_server.py",
                 ],
@@ -109,7 +116,7 @@ def _backend_launch_spec():
 
 def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
     """Start this project's backend when BASE points at the local machine."""
-    global _autostart_process
+    global _autostart_process, _autostart_token, _shutdown_registered
     enabled = os.environ.get("AI_BACKEND_AUTOSTART", "1") not in {
         "0",
         "false",
@@ -127,23 +134,40 @@ def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
         except BackendUnavailableError:
             pass
 
-        command, cwd = _backend_launch_spec()
-        _log(f"autostart backend: {' '.join(command)}")
+        owner_token = secrets.token_urlsafe(32)
+        command, cwd = _backend_launch_spec(owner_token)
+        display_command = [
+            "AI_BACKEND_OWNER_TOKEN=<hidden>"
+            if part.startswith("AI_BACKEND_OWNER_TOKEN=")
+            else part
+            for part in command
+        ]
+        _log(f"autostart backend: {' '.join(display_command)}")
+        child_environment = os.environ.copy()
+        child_environment["AI_BACKEND_OWNER_TOKEN"] = owner_token
+        child_environment["AI_BACKEND_IDLE_TIMEOUT"] = "90"
         popen_kwargs = {
             "cwd": cwd,
+            "env": child_environment,
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
         }
         if os.name == "nt":
+            startup_info = subprocess.STARTUPINFO()
+            startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup_info.wShowWindow = subprocess.SW_HIDE
+            popen_kwargs["startupinfo"] = startup_info
             popen_kwargs["creationflags"] = (
-                subprocess.CREATE_NO_WINDOW
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.DETACHED_PROCESS
+                subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             )
         try:
             process = subprocess.Popen(command, **popen_kwargs)
             _autostart_process = process
+            _autostart_token = owner_token
+            if not _shutdown_registered:
+                atexit.register(shutdown_local_backend)
+                _shutdown_registered = True
         except (OSError, ValueError) as error:
             _log(f"backend autostart failed: {error}")
             return False
@@ -158,10 +182,45 @@ def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
                 if process.poll() is not None:
                     _log(f"backend autostart exited with code {process.returncode}")
                     _autostart_process = None
+                    _autostart_token = None
                     return False
                 time.sleep(0.4)
         _log("backend autostart timed out")
         return False
+
+
+def shutdown_local_backend(timeout: float = 3.0) -> bool:
+    """Stop only the backend process started and owned by this editor process."""
+    global _autostart_process, _autostart_token
+
+    process = _autostart_process
+    token = _autostart_token
+    if process is None or not token:
+        return False
+
+    stopped = False
+    try:
+        response = _session.post(
+            f"{BASE}/shutdown",
+            headers={"X-AI-Backend-Owner": token},
+            timeout=(0.75, max(1.0, float(timeout))),
+        )
+        stopped = response.status_code == 200
+    except requests.RequestException:
+        pass
+
+    try:
+        process.wait(timeout=max(0.5, float(timeout)))
+        stopped = True
+    except subprocess.TimeoutExpired:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    finally:
+        _autostart_process = None
+        _autostart_token = None
+    return stopped
 
 
 def _log(msg: str, data: Any = None) -> None:
