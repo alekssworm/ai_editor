@@ -110,11 +110,18 @@ def build_project_preview(
     with Image.open(background_path) as source:
         image = source.convert("RGB")
 
+    source_size = image.size
     preview_size = fit_size(image.size, max_dimension)
     if preview_size != image.size:
         image = image.resize(preview_size, Image.Resampling.LANCZOS)
     preview_assets = resize_effect_assets(assets, preview_size)
     params = renderer_params_from_card(card)
+    if preview_size != source_size and "strength" in params:
+        scale = min(
+            preview_size[0] / source_size[0],
+            preview_size[1] / source_size[1],
+        )
+        params["strength"] = float(params["strength"]) * scale
     frames = DeterministicEffectEngine().render_frames(
         image,
         preview_assets,

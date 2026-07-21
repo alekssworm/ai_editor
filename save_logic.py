@@ -40,12 +40,50 @@ def _shape_local_path(item, crop_rect):
     return path
 
 
+def _refresh_shape_parents(window):
+    """Recompute nesting from current geometry after moves and resizes."""
+    entries = [
+        (int(shape_id), item, _shape_scene_rect(item))
+        for shape_id, item in window.shape_registry.items()
+        if isinstance(item, ShapeItem) and item.scene() is window.scene
+    ]
+    for shape_id, item, bounds in entries:
+        center = bounds.center()
+        child_area = max(0.0, bounds.width() * bounds.height())
+        candidates = []
+        for other_id, other, other_bounds in entries:
+            if other_id == shape_id:
+                continue
+            other_area = max(0.0, other_bounds.width() * other_bounds.height())
+            if other_area <= child_area or not other_bounds.contains(center):
+                continue
+            if other.contains(other.mapFromScene(center)):
+                candidates.append((other_area, other_id))
+        window.shape_parents[shape_id] = (
+            min(candidates)[1] if candidates else None
+        )
+
+
 def _write_json_atomic(path, data):
     temp_path = path + ".tmp"
     try:
         with open(temp_path, "w", encoding="utf-8") as output:
             json.dump(data, output, ensure_ascii=False, indent=4)
             output.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _save_qimage_atomic(image, path):
+    temp_path = f"{path}.tmp.png"
+    try:
+        if not image.save(temp_path, "PNG"):
+            raise RuntimeError(f"Could not encode image: {path}")
         os.replace(temp_path, path)
     finally:
         if os.path.exists(temp_path):
@@ -109,8 +147,7 @@ def _save_outputs_impl(self, folder=None):
 
     # ✅ сохраняем фон рядом с проектом (относительный путь в shapes.json)
     bg_out_path = os.path.join(folder, 'background.png')
-    if not original_image.save(bg_out_path):
-        raise RuntimeError(f"Не удалось сохранить background.png: {bg_out_path}")
+    _save_qimage_atomic(original_image, bg_out_path)
     bg_for_json = 'background.png'
 
     shape_data = []
@@ -118,6 +155,8 @@ def _save_outputs_impl(self, folder=None):
 
     children = []
     parents = []
+
+    _refresh_shape_parents(self)
 
     for item in reversed(self.scene.items()):
         if not isinstance(item, ShapeItem):
@@ -154,7 +193,9 @@ def _save_outputs_impl(self, folder=None):
             cut_painter.drawImage(0, 0, original_crop)
             cut_painter.end()
 
-            cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
+            _save_qimage_atomic(
+                cut_image, os.path.join(pieces_dir, f"shape_{shape_id}.png")
+            )
 
             # ВАЖНО: очистить круг с фона
             global_path = QPainterPath()
@@ -208,7 +249,9 @@ def _save_outputs_impl(self, folder=None):
         cut_painter.fillPath(mask, Qt.transparent)
         cut_painter.end()
 
-        cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
+        _save_qimage_atomic(
+            cut_image, os.path.join(pieces_dir, f"shape_{shape_id}.png")
+        )
 
         global_path = QPainterPath()
         if item_type == "Polygon":
@@ -272,7 +315,9 @@ def _save_outputs_impl(self, folder=None):
             cut_painter.drawImage(0, 0, original_crop)
             cut_painter.end()
 
-            cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
+            _save_qimage_atomic(
+                cut_image, os.path.join(pieces_dir, f"shape_{shape_id}.png")
+            )
 
             # ВАЖНО: удалить круг с общего фона
             global_path = QPainterPath()
@@ -341,7 +386,9 @@ def _save_outputs_impl(self, folder=None):
         cut_painter.fillPath(mask, Qt.transparent)
         cut_painter.end()
 
-        cut_image.save(os.path.join(pieces_dir, f"shape_{shape_id}.png"))
+        _save_qimage_atomic(
+            cut_image, os.path.join(pieces_dir, f"shape_{shape_id}.png")
+        )
 
         global_path = QPainterPath()
         if item_type == "Polygon":
@@ -379,10 +426,7 @@ def _save_outputs_impl(self, folder=None):
         index += 1
 
     without_shape_path = os.path.join(folder, "without_shape_area.png")
-    if not without_shape_image.save(without_shape_path):
-        raise RuntimeError(
-            f"Не удалось сохранить without_shape_area.png: {without_shape_path}"
-        )
+    _save_qimage_atomic(without_shape_image, without_shape_path)
 
     project_path = os.path.join(folder, "shapes.json")
     if hasattr(self, "ai_window"):

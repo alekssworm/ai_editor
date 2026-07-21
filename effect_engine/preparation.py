@@ -96,8 +96,29 @@ class FlatDepthEstimator:
 
 
 @dataclass(slots=True)
+class ImageAwareDepthEstimator:
+    """Deterministic image-space depth proxy used until an AI provider is selected."""
+
+    blur_radius: float = 7.0
+    name: str = "image-depth-v1"
+
+    def estimate(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        gray = np.asarray(
+            Image.fromarray(image, mode="RGB")
+            .convert("L")
+            .filter(ImageFilter.GaussianBlur(radius=self.blur_radius)),
+            dtype=np.float32,
+        ) / 255.0
+        # Darker regions usually tolerate a little more displacement; the soft
+        # mask term reduces movement close to selection boundaries.
+        depth = (0.3 + (1.0 - gray) * 0.45) * (0.65 + mask * 0.35)
+        return np.clip(depth, 0.0, 1.0).astype(np.float32)
+
+
+@dataclass(slots=True)
 class DirectionalFlowEstimator:
-    name: str = "directional-flow-v1"
+    variation: float = 0.28
+    name: str = "directional-flow-v2"
 
     @staticmethod
     def _principal_direction(mask: np.ndarray) -> tuple[float, float]:
@@ -119,15 +140,29 @@ class DirectionalFlowEstimator:
         mask: np.ndarray,
         direction: tuple[float, float] | None = None,
     ) -> np.ndarray:
-        del image
         dx, dy = direction or self._principal_direction(mask)
         length = float(np.hypot(dx, dy))
         if length < 1e-8:
             dx, dy, length = 1.0, 0.0, 1.0
         dx, dy = dx / length, dy / length
+        gray = np.asarray(
+            Image.fromarray(image, mode="RGB")
+            .convert("L")
+            .filter(ImageFilter.GaussianBlur(radius=3.0)),
+            dtype=np.float32,
+        ) / 255.0
+        grad_y, grad_x = np.gradient(gray)
+        along_gradient = grad_x * dx + grad_y * dy
+        scale = float(np.percentile(np.abs(along_gradient[mask > 0.1]), 90)) if np.any(mask > 0.1) else 0.0
+        if scale > 1e-6:
+            variation = np.clip(along_gradient / scale, -1.0, 1.0) * self.variation
+        else:
+            variation = np.zeros_like(mask, dtype=np.float32)
         flow = np.zeros((*mask.shape, 2), dtype=np.float32)
-        flow[..., 0] = float(dx)
-        flow[..., 1] = float(dy)
+        flow[..., 0] = float(dx) - float(dy) * variation
+        flow[..., 1] = float(dy) + float(dx) * variation
+        flow_length = np.maximum(np.linalg.norm(flow, axis=-1, keepdims=True), 1e-6)
+        flow /= flow_length
         return flow
 
 
@@ -203,7 +238,7 @@ class PreparationPipeline:
     """Prepare stable assets; AI-backed providers can replace any default stage."""
 
     mask_refiner: MaskRefiner = field(default_factory=MorphologyMaskRefiner)
-    depth_estimator: DepthEstimator = field(default_factory=FlatDepthEstimator)
+    depth_estimator: DepthEstimator = field(default_factory=ImageAwareDepthEstimator)
     flow_estimator: FlowEstimator = field(default_factory=DirectionalFlowEstimator)
     texture_generator: TextureGenerator = field(default_factory=NoTextureGenerator)
     style_analyzer: StyleAnalyzer = field(default_factory=StyleAnalyzer)

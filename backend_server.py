@@ -20,6 +20,8 @@ import math
 import os
 import re
 import sys
+import copy
+import threading
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -43,6 +45,8 @@ log = logging.getLogger("ai_backend")
 # Job store
 # -----------------------
 _jobs: Dict[str, Dict[str, Any]] = {}
+_jobs_lock = threading.RLock()
+_MAX_JOBS = 64
 _executor = ThreadPoolExecutor(max_workers=1)  # 1 job at a time (GPU-safe)
 _svd_pipe = None  # lazy pipeline cache
 
@@ -124,11 +128,11 @@ class RenderRequest(BaseModel):
     out_mp4: str = Field(..., description="Output mp4 path (Windows or WSL path)")
     masks_dir: Optional[str] = Field(None, description="Optional (not used by this backend version)")
     pieces_dir: Optional[str] = Field(None, description="Optional (not used by this backend version)")
-    fps: int = 7
-    num_frames: int = 25
-    pad: int = 32
-    feather_px: int = 5
-    seed_base: int = 123
+    fps: int = Field(7, ge=1, le=60)
+    num_frames: int = Field(25, ge=2, le=120)
+    pad: int = Field(32, ge=0, le=512)
+    feather_px: int = Field(5, ge=0, le=128)
+    seed_base: int = Field(123, ge=0, le=2_147_483_647)
     render_mode: str = Field("final", description="Quality preset: preview|final")
     layer_render: bool = Field(True, description="Render per tool/settings layer (faster, fewer seams)")
     enable_cache: bool = Field(True, description="Cache generated layer frames for reuse")
@@ -518,7 +522,8 @@ def _apply_directional_loop(
     cycles: int = 1,
 ):
     """Apply a deterministic, seamless directional motion bias to SVD frames."""
-    from PIL import ImageChops
+    import numpy as np
+    from PIL import Image
     from effect_engine.project import normalize_direction
 
     normalized = normalize_direction(direction)
@@ -537,8 +542,62 @@ def _apply_directional_loop(
         across = (1.0 - math.cos(phase)) * amplitude * 0.18
         offset_x = round(dx * along + perpendicular[0] * across)
         offset_y = round(dy * along + perpendicular[1] * across)
-        result.append(ImageChops.offset(frame.convert("RGB"), offset_x, offset_y))
+        array = np.asarray(frame.convert("RGB"), dtype=np.uint8)
+        pad_x, pad_y = abs(offset_x), abs(offset_y)
+        if pad_x == 0 and pad_y == 0:
+            result.append(frame.convert("RGB"))
+            continue
+        mode = "reflect" if array.shape[0] > 1 and array.shape[1] > 1 else "edge"
+        padded = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x), (0, 0)), mode=mode)
+        start_x = pad_x - offset_x
+        start_y = pad_y - offset_y
+        shifted = padded[
+            start_y : start_y + array.shape[0],
+            start_x : start_x + array.shape[1],
+        ]
+        result.append(Image.fromarray(shifted, mode="RGB"))
     return result
+
+
+def _make_seamless_ping_pong(frames_rgb):
+    """Turn a drifting generated clip into a deterministic loop without a hard cut."""
+    if len(frames_rgb) < 3:
+        return frames_rgb
+    frame_count = len(frames_rgb)
+    last_index = frame_count - 1
+    result = []
+    for index in range(frame_count):
+        phase = 2.0 * index / frame_count
+        source_phase = phase if phase <= 1.0 else 2.0 - phase
+        source_index = min(last_index, max(0, round(source_phase * last_index)))
+        result.append(frames_rgb[source_index].copy())
+    return result
+
+
+class RenderCancelled(RuntimeError):
+    pass
+
+
+def _check_cancelled(job: Dict[str, Any]) -> None:
+    if job.get("cancel_requested"):
+        raise RenderCancelled("Render cancelled")
+
+
+def _prune_jobs() -> None:
+    """Bound the in-memory job history while never removing active jobs."""
+    with _jobs_lock:
+        if len(_jobs) < _MAX_JOBS:
+            return
+        terminal = sorted(
+            (
+                (float(job.get("updated_at") or job.get("created_at") or 0.0), job_id)
+                for job_id, job in _jobs.items()
+                if job.get("state") in {"done", "error", "cancelled"}
+            )
+        )
+        while len(_jobs) >= _MAX_JOBS and terminal:
+            _timestamp, job_id = terminal.pop(0)
+            _jobs.pop(job_id, None)
 
 
 def _cache_path(base_dir: str, key: str) -> str:
@@ -559,15 +618,48 @@ def _make_cache_key(*, patch_rgb, mask_L, settings: Dict[str, Any]) -> str:
 
 def _save_cached_frames(path: str, frames_rgb) -> None:
     import numpy as np
+
     arr = np.stack([np.array(f.convert("RGB"), dtype=np.uint8) for f in frames_rgb], axis=0)
-    np.savez_compressed(path, frames=arr)
+    temp_path = f"{path}.{uuid.uuid4().hex}.tmp.npz"
+    try:
+        np.savez_compressed(temp_path, frames=arr)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _prune_layer_cache(directory: str, max_entries: int = 48) -> None:
+    """Keep the newest cache entries and ignore unrelated files."""
+    if max_entries < 1 or not os.path.isdir(directory):
+        return
+
+    entries = []
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if not name.endswith(".npz") or not os.path.isfile(path):
+            continue
+        try:
+            entries.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+
+    entries.sort(reverse=True)
+    for _, path in entries[max_entries:]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def _load_cached_frames(path: str):
     import numpy as np
     from PIL import Image
-    z = np.load(path)
-    arr = z["frames"]
+
+    with np.load(path) as z:
+        arr = z["frames"].copy()
     return [Image.fromarray(arr[i], mode="RGB") for i in range(arr.shape[0])]
 
 
@@ -586,6 +678,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
       - Encode mp4
     """
     job = _jobs[job_id]
+    _check_cancelled(job)
     _append_job_log(job, "job started")
 
     # --- resolve paths for the host running this backend ---
@@ -680,6 +773,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
         )
     device = "cuda" if cuda_available else "cpu"
     pipe = _load_svd_pipeline(device=device)
+    _check_cancelled(job)
 
     from PIL import Image, ImageFilter
     import numpy as np
@@ -750,6 +844,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     from PIL import ImageDraw, ImageChops
 
     def _render_one_layer(layer_idx: int, layer_key, entries):
+        _check_cancelled(job)
         (
             tool,
             motion_bucket_id,
@@ -852,7 +947,11 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
         patch_cond = _prepare_focus_patch(patch, mask_focus, blur_outside_px=blur_outside_px)
 
-        seed = int(req.seed_base)  # unified seed across layers
+        layer_hash = int(
+            hashlib.sha256(repr(layer_key).encode("utf-8")).hexdigest()[:8],
+            16,
+        )
+        seed = (int(req.seed_base) + layer_hash) % 2_147_483_647
 
         settings = {
             "tool": tool,
@@ -866,6 +965,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             "direction": [direction_x, direction_y],
             "directional_strength": float(directional_strength),
             "cycles": int(cycles),
+            "loop_mode": "ping-pong-reflect-v1",
         }
         ckey = _make_cache_key(patch_rgb=patch_cond, mask_L=mask_focus, settings=settings)
         cpath = _cache_path(base_dir, ckey)
@@ -882,6 +982,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             )
 
             def on_denoising_step(pipeline, step_index, _timestep, callback_kwargs):
+                _check_cancelled(job)
                 step = int(step_index) + 1
                 steps = int(getattr(pipeline, "num_timesteps", 25))
                 job["progress"] = {
@@ -915,6 +1016,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
                 "layer": str(layer_key),
             }
             job["updated_at"] = _now()
+            frames_piece = _make_seamless_ping_pong(frames_piece)
             frames_piece = _apply_directional_loop(
                 frames_piece,
                 direction,
@@ -927,6 +1029,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             if req.enable_cache:
                 try:
                     _save_cached_frames(cpath, frames_piece)
+                    _prune_layer_cache(os.path.dirname(cpath))
                 except Exception:
                     pass
 
@@ -936,6 +1039,7 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
     if req.layer_render:
         for li, (layer_key, entries) in enumerate(layer_items, start=1):
+            _check_cancelled(job)
             job["progress"] = {"stage": "rendering", "current": li, "total": total_layers, "layer": str(layer_key)}
             _append_job_log(job, f"rendering layer {li}/{total_layers}: {layer_key}")
             _render_one_layer(li, layer_key, entries)
@@ -946,24 +1050,44 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             for sh, sid, a in entries:
                 flat.append((("shape",) + k[1:], [(sh, sid, a)]))
         for li, (layer_key, entries) in enumerate(flat, start=1):
+            _check_cancelled(job)
             job["progress"] = {"stage": "rendering", "current": li, "total": len(flat), "layer": str(layer_key)}
             _render_one_layer(li, layer_key, entries)
 
     # --- encode ---
     job["progress"] = {"stage": "encoding", "current": total_layers, "total": total_layers}
     _append_job_log(job, "encoding mp4")
+    _check_cancelled(job)
 
     import imageio
-    writer = imageio.get_writer(
-        out_mp4_path,
-        fps=fps,
-        format="FFMPEG",
-        codec="libx264",
-        pixelformat="yuv420p",
-    )
-    for t_idx in range(num_frames):
-        writer.append_data(base_frames[t_idx][..., :3])
-    writer.close()
+    temp_mp4_path = f"{out_mp4_path}.job-{job_id}.tmp.mp4"
+    writer = None
+    try:
+        writer = imageio.get_writer(
+            temp_mp4_path,
+            fps=fps,
+            format="FFMPEG",
+            codec="libx264",
+            pixelformat="yuv420p",
+        )
+        for t_idx in range(num_frames):
+            _check_cancelled(job)
+            writer.append_data(base_frames[t_idx][..., :3])
+        writer.close()
+        writer = None
+        _check_cancelled(job)
+        os.replace(temp_mp4_path, out_mp4_path)
+    finally:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if os.path.exists(temp_mp4_path):
+            try:
+                os.remove(temp_mp4_path)
+            except OSError:
+                pass
 
     job["state"] = "done"
     job["result"] = {
@@ -1031,6 +1155,13 @@ def gpu():
 
 @app.post("/svd/render")
 def svd_render(req: RenderRequest, request: Request):
+    _prune_jobs()
+    with _jobs_lock:
+        if len(_jobs) >= _MAX_JOBS:
+            raise HTTPException(
+                status_code=503,
+                detail="Job queue is full; wait for an active render to finish",
+            )
     job_id = uuid.uuid4().hex
     job = {
         "job_id": job_id,
@@ -1042,13 +1173,19 @@ def svd_render(req: RenderRequest, request: Request):
         "progress": {"stage": "queued", "current": 0, "total": 0},
         "log": [],
     }
-    _jobs[job_id] = job
+    with _jobs_lock:
+        _jobs[job_id] = job
     _append_job_log(job, "queued")
 
     # run async in executor
     def _runner():
         try:
             _render_svd_job(job_id, req)
+        except RenderCancelled:
+            job["state"] = "cancelled"
+            job["error"] = None
+            job["progress"] = {"stage": "cancelled", "current": 0, "total": 0}
+            _append_job_log(job, "cancelled")
         except Exception as e:
             job["state"] = "error"
             job["error"] = str(e)
@@ -1061,11 +1198,24 @@ def svd_render(req: RenderRequest, request: Request):
 
 @app.get("/svd/status/{job_id}")
 def svd_status(job_id: str):
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job_id not found")
-    # return a safe copy
-    return job
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job_id not found")
+        return copy.deepcopy(job)
+
+
+@app.post("/svd/cancel/{job_id}")
+def svd_cancel(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job_id not found")
+        if job.get("state") in {"done", "error", "cancelled"}:
+            return {"job_id": job_id, "state": job.get("state")}
+        job["cancel_requested"] = True
+        job["updated_at"] = _now()
+        return {"job_id": job_id, "state": "cancelling"}
 
 
 def main() -> int:

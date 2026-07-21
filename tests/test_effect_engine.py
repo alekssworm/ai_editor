@@ -67,6 +67,22 @@ class EffectEngineTests(unittest.TestCase):
         np.testing.assert_allclose(restored.depth, assets.depth, atol=1.0 / 65535.0)
         np.testing.assert_array_equal(restored.flow, assets.flow)
 
+    def test_effect_asset_manifest_switch_is_atomic_and_cleans_old_files(self) -> None:
+        assets = self.prepare()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = EffectAssetStore.save(assets, directory)
+            first_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            first_files = set(first_manifest["files"].values())
+
+            EffectAssetStore.save(self.prepare(seed=99), directory)
+            second_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            second_files = set(second_manifest["files"].values())
+
+            self.assertTrue(first_files.isdisjoint(second_files))
+            self.assertTrue(all((Path(directory) / name).exists() for name in second_files))
+            self.assertTrue(all(not (Path(directory) / name).exists() for name in first_files))
+            self.assertFalse(list(Path(directory).glob(".manifest.json-*.tmp")))
+
     def test_water_renderer_is_seeded_and_periodic(self) -> None:
         assets = self.prepare(seed=123)
         engine = DeterministicEffectEngine()
@@ -126,8 +142,14 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(assets.metadata["renderer_params"]["strength"], 4.5)
             self.assertTrue((target / "manifest.json").exists())
             self.assertGreater(float(assets.mask.max()), 0.9)
-            np.testing.assert_allclose(assets.flow[..., 0], 0.0)
-            np.testing.assert_allclose(assets.flow[..., 1], -1.0)
+            np.testing.assert_allclose(
+                np.linalg.norm(assets.flow, axis=-1), 1.0, atol=1e-5
+            )
+            self.assertAlmostEqual(
+                float(assets.flow[..., 0].mean()), 0.0, delta=0.08
+            )
+            self.assertLess(float(assets.flow[..., 1].mean()), -0.95)
+            self.assertGreater(float(assets.depth.std()), 0.001)
 
     def test_flow_direction_round_trip_and_project_lookup(self) -> None:
         serialized = serialize_flow_directions(
@@ -290,8 +312,13 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(result.params["opacity"], 1.0)
             self.assertEqual(result.preset_id, "river")
             self.assertEqual(stored.metadata["preset_id"], "river")
-            np.testing.assert_allclose(stored.flow[..., 0], 0.0)
-            np.testing.assert_allclose(stored.flow[..., 1], -1.0)
+            np.testing.assert_allclose(
+                np.linalg.norm(stored.flow, axis=-1), 1.0, atol=1e-5
+            )
+            self.assertAlmostEqual(
+                float(stored.flow[..., 0].mean()), 0.0, delta=0.08
+            )
+            self.assertLess(float(stored.flow[..., 1].mean()), -0.95)
             self.assertEqual(stored.metadata["direction"], [0.0, -1.0])
 
 

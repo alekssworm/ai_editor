@@ -121,7 +121,15 @@ def start_effect_preview(window) -> None:
     if getattr(window, "_effect_preview_running", False):
         return
 
-    project_path = getattr(window, "current_shapes_json_path", None)
+    sync_callback = getattr(window, "_sync_current_project", None)
+    if callable(sync_callback):
+        try:
+            project_path = sync_callback()
+        except Exception as error:
+            QMessageBox.critical(window, "Preview save error", str(error))
+            return
+    else:
+        project_path = getattr(window, "current_shapes_json_path", None)
     if not project_path or not Path(project_path).is_file():
         QMessageBox.information(
             window,

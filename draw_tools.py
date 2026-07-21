@@ -129,20 +129,14 @@ class ResizableRectItem(QGraphicsRectItem,ShapeItem):
         br_handle.setPos(self.rect().bottomRight())
         self.handles.append(br_handle)
 
-    def update_from_handle(self, handle, new_pos):
-        if handle.corner == "br":
-            rect = QRectF(self.rect().topLeft(), self.mapFromScene(new_pos))
-            self.setRect(rect.normalized())
-            handle.setPos(self.rect().bottomRight())
-
     def setRect(self, rect):
         if self._updating:
             return
         self._updating = True
 
         super().setRect(rect)
-
-
+        for handle in getattr(self, "handles", []):
+            handle.setPos(self.rect().bottomRight())
         self._updating = False
 
     def update_from_handle(self, handle, new_pos):

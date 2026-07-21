@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -18,17 +20,53 @@ class EffectAssetStore:
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
 
+        token = uuid.uuid4().hex[:12]
+        files = {
+            "mask": f"mask-{token}.png",
+            "depth": f"depth-{token}.png",
+            "flow": f"flow-{token}.npz",
+        }
+        new_paths = [target / filename for filename in files.values()]
+        manifest_path = target / cls.MANIFEST_NAME
+        previous_files = []
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            previous_files = list((previous.get("files") or {}).values())
+        except (OSError, ValueError, AttributeError):
+            pass
+
         mask_u8 = np.rint(assets.mask * 255.0).astype(np.uint8)
         depth_u16 = np.rint(assets.depth * 65535.0).astype(np.uint16)
-        Image.fromarray(mask_u8, mode="L").save(target / "mask.png")
-        Image.fromarray(depth_u16).save(target / "depth.png")
-        np.savez_compressed(target / "flow.npz", flow=assets.flow.astype(np.float32))
+        manifest_temp = target / f".{cls.MANIFEST_NAME}-{token}.tmp"
+        try:
+            Image.fromarray(mask_u8, mode="L").save(target / files["mask"])
+            Image.fromarray(depth_u16).save(target / files["depth"])
+            np.savez_compressed(
+                target / files["flow"], flow=assets.flow.astype(np.float32)
+            )
+            manifest = assets.manifest()
+            manifest["files"] = files
+            manifest_temp.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(manifest_temp, manifest_path)
+        except Exception:
+            for path in [*new_paths, manifest_temp]:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            raise
 
-        manifest_path = target / cls.MANIFEST_NAME
-        manifest_path.write_text(
-            json.dumps(assets.manifest(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        for filename in previous_files:
+            if filename not in files.values():
+                try:
+                    old_path = (target / str(filename)).resolve()
+                    if old_path.parent == target.resolve():
+                        old_path.unlink()
+                except OSError:
+                    pass
         return manifest_path
 
     @classmethod

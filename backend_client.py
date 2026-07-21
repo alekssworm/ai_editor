@@ -219,3 +219,14 @@ def start_svd_render_checked(
 
 def get_svd_status(job_id: str, timeout: float = 5.0) -> Dict[str, Any]:
     return _req("GET", f"/svd/status/{job_id}", timeout=timeout, quiet=True)
+
+
+def cancel_svd_render(job_id: str, timeout: float = 5.0) -> Dict[str, Any]:
+    if not str(job_id or "").strip():
+        raise ValueError("cancel_svd_render: job_id required")
+    return _req(
+        "POST",
+        f"/svd/cancel/{job_id}",
+        timeout=timeout,
+        quiet=True,
+    )

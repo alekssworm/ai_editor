@@ -1,3 +1,5 @@
+import math
+
 from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsSceneMouseEvent
 from draw_tools import ResizableRectItem, SelectableCircleItem, SelectablePolygonItem  # Импортируем оба
@@ -104,7 +106,8 @@ class DrawingToolController:
                 self.temp_lines.append(line)
 
                 if len(self.polygon_points) >= 3:
-                    dist = (point - self.polygon_points[0]).manhattanLength()
+                    first = self.polygon_points[0]
+                    dist = math.hypot(point.x() - first.x(), point.y() - first.y())
                     if dist < 15:
                         self.finish_polygon()
 
@@ -117,7 +120,9 @@ class DrawingToolController:
                 self.current_item.setRect(rect)
             elif self.current_tool == "circle":
                 center = self.start_point
-                radius = (end_point - center).manhattanLength()
+                radius = math.hypot(
+                    end_point.x() - center.x(), end_point.y() - center.y()
+                )
                 rect = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
                 self.current_item.setRect(rect)
 

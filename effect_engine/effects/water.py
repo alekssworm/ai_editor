@@ -89,6 +89,13 @@ class WaterFlowEffect:
         y, x = np.mgrid[0:height, 0:width].astype(np.float32)
         flow_x = assets.flow[..., 0]
         flow_y = assets.flow[..., 1]
+        style_scale = np.float32(
+            np.clip(
+                0.85 + assets.style.edge_softness * 0.25 - assets.style.grain * 0.1,
+                0.7,
+                1.15,
+            )
+        )
         along = x * flow_x + y * flow_y
         across = -x * flow_y + y * flow_x
 
@@ -100,7 +107,7 @@ class WaterFlowEffect:
         )
 
         depth_scale = 0.65 + assets.depth * 0.7
-        amplitude = np.float32(config.strength) * depth_scale
+        amplitude = np.float32(config.strength) * depth_scale * style_scale
         displacement_along = amplitude * 0.45 * wave_a
         displacement_across = amplitude * wave_b
         dx = flow_x * displacement_along - flow_y * displacement_across

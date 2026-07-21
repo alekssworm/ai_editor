@@ -50,6 +50,7 @@ class SaveLogicTests(unittest.TestCase):
             self.assertTrue((Path(directory) / "without_shape_area.png").is_file())
             self.assertTrue((Path(directory) / "pieces" / "shape_1.png").is_file())
             self.assertFalse((Path(directory) / "shapes.json.tmp").exists())
+            self.assertFalse(list(Path(directory).rglob("*.tmp.png")))
             project = json.loads(project_path.read_text(encoding="utf-8"))
             self.assertEqual(project["shapes"][0]["id"], 1)
             folder_dialog.assert_not_called()
@@ -136,6 +137,48 @@ class SaveLogicTests(unittest.TestCase):
                 )
             )
             window.close()
+
+    def test_current_geometry_recomputes_parent_relationships(self) -> None:
+        from editor import MainWindow
+
+        with tempfile.TemporaryDirectory() as directory:
+            window = MainWindow()
+            background_pixmap = QPixmap(120, 90)
+            background_pixmap.fill(QColor("#405060"))
+            window.scene.addItem(QGraphicsPixmapItem(background_pixmap))
+            parent = ResizableRectItem(
+                QRectF(10, 10, 80, 60), QColor("#00aaff")
+            )
+            child = ResizableRectItem(
+                QRectF(25, 25, 15, 12), QColor("#ffaa00")
+            )
+            window.scene.addItem(parent)
+            window.scene.addItem(child)
+            window.shape_registry.update({1: parent, 2: child})
+            window.shape_parents.update({1: None, 2: None})
+
+            with (
+                patch("save_logic.QMessageBox.information"),
+                patch("save_logic.QMessageBox.critical") as critical,
+            ):
+                result = save_outputs(window, directory)
+
+            self.assertIsNotNone(result)
+            critical.assert_not_called()
+            project = json.loads(
+                (Path(directory) / "shapes.json").read_text(encoding="utf-8")
+            )
+            by_id = {shape["id"]: shape for shape in project["shapes"]}
+            self.assertIsNone(by_id[1]["parent_id"])
+            self.assertEqual(by_id[2]["parent_id"], 1)
+            window.close()
+
+    def test_rectangle_handle_tracks_programmatic_resize(self) -> None:
+        shape = ResizableRectItem(QRectF(5, 5, 0, 0), QColor("#00aaff"))
+
+        shape.setRect(QRectF(5, 5, 40, 20))
+
+        self.assertEqual(shape.handles[0].pos(), shape.rect().bottomRight())
 
 
 if __name__ == "__main__":

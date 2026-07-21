@@ -19,7 +19,7 @@ from Activate_disconect_button import (
     activate_rectangle_mode, deactivate_drawing_mode, activate_circle_mode
 )
 from on_shape_selected import on_shape_selected
-from save_logic import save_outputs
+from save_logic import _save_outputs_impl, save_outputs
 from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
 
         self.ai_window = AIWindow()
         self.ai_window.motion_changed.connect(self._sync_ai_motion)
+        self.ai_window.project_sync_callback = self._sync_current_project
         self.ai_window.hide()  # окно создано (для фантомов), но не показано
 
         def open_ai():
@@ -157,6 +158,13 @@ class MainWindow(QMainWindow):
             return
         self.flow_directions[int(shape_id)] = direction
         self.flow_direction_controller.refresh_for_selection()
+
+    def _sync_current_project(self):
+        """Persist current geometry/effects silently before preview or rendering."""
+        folder = getattr(self, "current_project_folder", None)
+        if not folder:
+            return getattr(self, "current_shapes_json_path", None)
+        return _save_outputs_impl(self, folder=folder)
 
     def keyPressEvent(self, event):
         if not on_key_press(self, event):

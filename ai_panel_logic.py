@@ -502,6 +502,7 @@ class MotionSettingsWidget(QFrame):
         super().__init__(parent)
         self._configured = False
         self._loading = False
+        self._exact_direction = None
         self.setObjectName("motionSettings")
 
         layout = QVBoxLayout(self)
@@ -554,7 +555,7 @@ class MotionSettingsWidget(QFrame):
             "Whole cycles per loop; integer values keep the animation seamless"
         )
 
-        self.angle_spin.valueChanged.connect(self._on_value_changed)
+        self.angle_spin.valueChanged.connect(self._on_angle_changed)
         self.strength_spin.valueChanged.connect(self._on_value_changed)
         self.cycles_spin.valueChanged.connect(self._on_value_changed)
         self._update_direction_label()
@@ -593,6 +594,11 @@ class MotionSettingsWidget(QFrame):
         self._configured = True
         self.changed.emit()
 
+    def _on_angle_changed(self, value=None):
+        if not self._loading:
+            self._exact_direction = None
+        self._on_value_changed(value)
+
     def _update_direction_label(self):
         angle = self.angle_spin.value()
         names = {
@@ -603,6 +609,7 @@ class MotionSettingsWidget(QFrame):
         self.direction_label.setText(names.get(angle, f"{angle}°"))
 
     def set_angle(self, angle_deg, *, configured=True):
+        self._exact_direction = None
         previous_loading = self._loading
         self._loading = not configured
         previous_angle = self.angle_spin.value()
@@ -618,6 +625,7 @@ class MotionSettingsWidget(QFrame):
         if not isinstance(motion, dict):
             return
         from effect_engine.project import angle_from_direction
+        from effect_engine.project import normalize_direction
 
         angle = motion.get("angle_deg")
         try:
@@ -632,6 +640,7 @@ class MotionSettingsWidget(QFrame):
             cycles = round(float(motion.get("cycles", 1)))
         except (TypeError, ValueError):
             cycles = 1
+        exact_direction = normalize_direction(motion.get("direction"))
         self._loading = True
         try:
             self.angle_spin.setValue(round(angle) % 360)
@@ -640,13 +649,14 @@ class MotionSettingsWidget(QFrame):
         finally:
             self._loading = False
         self._configured = bool(configured)
+        self._exact_direction = exact_direction
         self._update_direction_label()
 
     def motion_data(self):
         from effect_engine.project import direction_from_angle
 
         angle = self.angle_spin.value()
-        direction = direction_from_angle(angle)
+        direction = self._exact_direction or direction_from_angle(angle)
         return {
             "angle_deg": angle,
             "direction": [round(direction[0], 8), round(direction[1], 8)],
@@ -668,6 +678,10 @@ class ShapeCard(QWidget):
         self.main_layout.setContentsMargins(4, 4, 4, 4)
         self.main_layout.setSpacing(4)
 
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(4)
         label = QLabel(f"{shape_type}  ·  Area {shape_id}")
         label.setObjectName("shapeCardTitle")
         label.setStyleSheet(f"""
@@ -676,7 +690,13 @@ class ShapeCard(QWidget):
             padding: 2px;
         """)
         label.setFocusPolicy(Qt.NoFocus)
-        self.main_layout.addWidget(label)
+        reset_button = QPushButton("Reset effects")
+        reset_button.setObjectName("resetEffectsButton")
+        reset_button.setToolTip("Remove the selected preset and legacy secondary settings")
+        reset_button.clicked.connect(self.clear_effects)
+        header_layout.addWidget(label, 1)
+        header_layout.addWidget(reset_button)
+        self.main_layout.addWidget(header)
 
         self.frame = QFrame()
         self.frame.setStyleSheet(f"""
@@ -706,6 +726,19 @@ class ShapeCard(QWidget):
 
     def motion_data(self):
         return self.motion_controls.motion_data()
+
+    def clear_effects(self):
+        """Remove effect blocks while keeping motion controls and area identity."""
+        for index in range(self.frame_layout.count() - 1, -1, -1):
+            item = self.frame_layout.itemAt(index)
+            widget = item.widget() if item else None
+            if widget is None or widget is self.motion_controls:
+                continue
+            self.frame_layout.takeAt(index)
+            widget.deleteLater()
+        self.tool_type = None
+        self.main_function_added = False
+        self.added_subfunctions.clear()
 
 
 from PySide6.QtWidgets import QGraphicsWidget, QGraphicsLinearLayout, QGraphicsProxyWidget
@@ -743,6 +776,7 @@ class AIWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self.setWindowTitle("AI Effects")
+        self.project_sync_callback = None
         self.selected_shape_id = None
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setText("AI render")
@@ -781,6 +815,16 @@ class AIWindow(QMainWindow):
         self.ui.fire_button.setText("Fire")
         self.ui.light_button.setText("Light")
         self.ui.weather_tool.setText("Weather")
+        self.ui.water_button.setToolTip(
+            "Water presets are supported by Local Preview and AI render"
+        )
+        for button in (
+            self.ui.fire_button,
+            self.ui.light_button,
+            self.ui.weather_tool,
+        ):
+            button.setEnabled(False)
+            button.setToolTip("Renderer not implemented yet")
         self.ui.label_13.setText("Selected area:")
         self.tool_button_group = QButtonGroup(self)
         self.tool_button_group.setExclusive(True)
@@ -849,6 +893,7 @@ class AIWindow(QMainWindow):
             QLabel#motionSummary { color: #67e8f9; font-weight: 600; }
             QFrame#motionSettings { background: #111c2f; border: 1px solid #334155; border-radius: 7px; }
             QPushButton#directionButton { min-height: 0; padding: 0; font-size: 15px; }
+            QPushButton#resetEffectsButton { min-height: 24px; padding: 2px 7px; color: #fca5a5; }
             QSpinBox { background: #172033; color: #f8fafc; border: 1px solid #475569; border-radius: 5px; padding: 3px; }
             QProgressBar { color: #e5e7eb; background: #1e293b; border: 1px solid #334155; border-radius: 5px; text-align: center; }
             QProgressBar::chunk { background: #22c55e; border-radius: 4px; }
@@ -916,6 +961,19 @@ class AIWindow(QMainWindow):
             self.ui.label_14.clear()
 
     def reset_project_state(self):
+        active_job_id = self._svd_job_id
+        if active_job_id:
+            from backend_async import run_in_thread
+            import backend_client
+
+            run_in_thread(
+                self,
+                backend_client.cancel_svd_render,
+                lambda _result: None,
+                lambda _message: None,
+                active_job_id,
+                timeout=5.0,
+            )
         self.clear_shape_cards()
         self.render_shapes_json_path = None
         self.render_masks_dir = None
@@ -928,6 +986,9 @@ class AIWindow(QMainWindow):
         self._last_svd_progress_key = None
         if hasattr(self, "render_progress_bar"):
             self.render_progress_bar.hide()
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(True)
+            self.ui.pushButton.setText("AI render")
         self._svd_timer.stop()
 
     def remove_shape_card(self, shape_id):
@@ -977,6 +1038,16 @@ class AIWindow(QMainWindow):
             tool_type = str(card_data.get("tool_type") or "").lower()
             if graphics_widget is None or not tool_type:
                 continue
+
+            panel_position = card_data.get("panel_position")
+            if isinstance(panel_position, dict):
+                try:
+                    graphics_widget.setPos(
+                        float(panel_position.get("x", graphics_widget.pos().x())),
+                        float(panel_position.get("y", graphics_widget.pos().y())),
+                    )
+                except (TypeError, ValueError):
+                    pass
 
             proxy = graphics_widget.layout().itemAt(0)
             shape_card = proxy.widget() if proxy else None
@@ -1078,8 +1149,17 @@ class AIWindow(QMainWindow):
         for btn in buttons:
             btn_text = btn.text().strip()
             btn_name = btn.objectName().strip()
+            supported = (
+                ui_class is Ui_water_tool
+                and btn_name.casefold().startswith("main_")
+            )
+            if btn_name.casefold().startswith("sub_"):
+                btn.setEnabled(False)
+                btn.setToolTip("This secondary effect is saved only for compatibility")
+                continue
             if (
-                btn_text
+                supported
+                and btn_text
                 and btn_text.casefold() not in {"x", "color"}
                 and btn_name.casefold() not in {"x", "color"}
             ):
@@ -1142,6 +1222,10 @@ class AIWindow(QMainWindow):
         # Добавление параметров
         param_block = QVBoxLayout()
         label = QLabel(button_text)
+        if is_sub:
+            label.setToolTip(
+                "Legacy secondary setting: preserved in the project but not rendered"
+            )
         label.setStyleSheet("color: white; font-weight: bold;")
         param_block.addWidget(label)
 
@@ -1192,6 +1276,11 @@ class AIWindow(QMainWindow):
         # "Campfire") does not contain the main_/sub_ prefix.
         wrapper.setProperty("effect_key", button_name)
         wrapper.setProperty("effect_block", True)
+        if is_sub:
+            wrapper.setEnabled(False)
+            wrapper.setToolTip(
+                "Preserved for compatibility; no renderer is connected to this setting"
+            )
         wrapper.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 4px;")
 
         shape_card.frame_layout.addWidget(wrapper)
@@ -1210,6 +1299,10 @@ class AIWindow(QMainWindow):
                 "tool_type": shape_card.tool_type,
                 "main": None,
                 "sub": [],
+                "panel_position": {
+                    "x": round(float(graphics_widget.pos().x()), 2),
+                    "y": round(float(graphics_widget.pos().y()), 2),
+                },
             }
             if shape_card.motion_controls.configured:
                 shape_info["motion"] = shape_card.motion_data()
@@ -1404,6 +1497,25 @@ class AIWindow(QMainWindow):
                 self.set_shape_direction(shape_id, raw_direction)
 
     def on_render_clicked(self):
+        if self._svd_job_id:
+            self._request_svd_cancel()
+            return
+
+        sync_callback = getattr(self, "project_sync_callback", None)
+        if callable(sync_callback):
+            try:
+                synced_path = sync_callback()
+            except Exception as error:
+                self._set_render_status("AI render: project sync failed", 8000)
+                QMessageBox.critical(
+                    self,
+                    "Project sync error",
+                    f"Could not save the current project before rendering:\n{error}",
+                )
+                return
+            if synced_path:
+                self.render_shapes_json_path = synced_path
+
         # 1) определяем shapes.json
         shapes_json = self.render_shapes_json_path
         if not shapes_json:
@@ -1492,6 +1604,9 @@ class AIWindow(QMainWindow):
                 self.render_progress_bar.setRange(0, 0)
                 self.render_progress_bar.setFormat("В очереди...")
             self._set_render_status("AI: задание поставлено в очередь")
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+                self.ui.pushButton.setText("Cancel render")
             try:
                 print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
             except Exception:
@@ -1522,6 +1637,42 @@ class AIWindow(QMainWindow):
             masks_dir=masks_dir,
             pieces_dir=pieces_dir,
             timeout=30.0,
+        )
+
+    def _request_svd_cancel(self):
+        job_id = self._svd_job_id
+        if not job_id:
+            return
+        from backend_async import run_in_thread
+        import backend_client
+
+        if hasattr(self.ui, "pushButton"):
+            self.ui.pushButton.setEnabled(False)
+            self.ui.pushButton.setText("Cancelling...")
+        self._set_render_status("AI render: cancelling...")
+
+        def on_ok(_result):
+            if self._svd_job_id == job_id:
+                self._set_render_status("AI render: cancellation requested")
+                self._svd_timer.setInterval(1000)
+                self._svd_timer.start()
+
+        def on_error(message):
+            if self._svd_job_id != job_id:
+                return
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+                self.ui.pushButton.setText("Cancel render")
+            self._set_render_status("AI render: cancellation failed", 8000)
+            QMessageBox.warning(self, "Cancel render", str(message))
+
+        run_in_thread(
+            self,
+            backend_client.cancel_svd_render,
+            on_ok,
+            on_error,
+            job_id,
+            timeout=5.0,
         )
 
     def _poll_svd_status(self):
@@ -1572,18 +1723,17 @@ class AIWindow(QMainWindow):
             )
             return
 
-        self._svd_timer.stop()
-        self._svd_job_id = None
-        self._svd_started_at = None
+        self._svd_timer.setInterval(10000)
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(True)
-        if hasattr(self, "render_progress_bar"):
-            self.render_progress_bar.hide()
-        self._set_render_status("AI render: соединение потеряно", 8000)
-        QMessageBox.warning(self, "AI render", str(message))
+            self.ui.pushButton.setText("Cancel render")
+        self._set_render_status(
+            "AI render: connection lost; reconnecting every 10 seconds"
+        )
 
     def _handle_svd_status(self, status: dict) -> None:
         self._svd_status_failures = 0
+        self._svd_timer.setInterval(2000)
         state = str(status.get("state") or "unknown")
         prog = status.get("progress") or {}
         stage = str(prog.get("stage") or "")
@@ -1636,6 +1786,7 @@ class AIWindow(QMainWindow):
             self._svd_started_at = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
+                self.ui.pushButton.setText("AI render")
             result = status.get("result") or {}
             output_path = (
                 result.get("out_mp4_win")
@@ -1661,6 +1812,7 @@ class AIWindow(QMainWindow):
             self._svd_started_at = None
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
+                self.ui.pushButton.setText("AI render")
             err = status.get("error") or "unknown error"
             try:
                 print(f"[DEBUG] [RENDER] error state: {err}")
@@ -1670,6 +1822,18 @@ class AIWindow(QMainWindow):
             if hasattr(self, "render_progress_bar"):
                 self.render_progress_bar.hide()
             QMessageBox.critical(self, "Render error", str(err))
+            return
+
+        if state == "cancelled":
+            self._svd_timer.stop()
+            self._svd_job_id = None
+            self._svd_started_at = None
+            if hasattr(self.ui, "pushButton"):
+                self.ui.pushButton.setEnabled(True)
+                self.ui.pushButton.setText("AI render")
+            if hasattr(self, "render_progress_bar"):
+                self.render_progress_bar.hide()
+            self._set_render_status("AI render: cancelled", 8000)
 
     def _start_render_thread(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
         if hasattr(self.ui, "pushButton"):

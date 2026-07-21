@@ -25,14 +25,63 @@ def load_scene(self):
         QMessageBox.critical(self, "Project error", str(error))
         return
 
-    # запомним путь для AI render только после успешной проверки
-    self.current_shapes_json_path = file_path
-
     shapes = full_data.get("shapes", [])
     bg_path = full_data.get("background", "")
     project_dir = os.path.dirname(os.path.abspath(file_path))
     if bg_path and not os.path.isabs(bg_path):
         bg_path = os.path.join(project_dir, bg_path)
+
+    try:
+        if not isinstance(shapes, list):
+            raise ValueError("Project field 'shapes' must be a list")
+        seen_ids = set()
+        for index, shape in enumerate(shapes, start=1):
+            if not isinstance(shape, dict):
+                raise ValueError(f"Shape #{index} must be an object")
+            shape_id = int(shape.get("id", index))
+            if shape_id in seen_ids:
+                raise ValueError(f"Duplicate shape id: {shape_id}")
+            seen_ids.add(shape_id)
+            shape_type = str(shape.get("type") or "")
+            if shape_type not in {"Rectangle", "Circle", "Polygon"}:
+                raise ValueError(f"Unsupported shape type: {shape_type!r}")
+            color = QColor(str(shape.get("color") or ""))
+            if not color.isValid():
+                raise ValueError(f"Invalid color for shape {shape_id}")
+            if shape_type == "Polygon":
+                points = shape.get("points")
+                if not isinstance(points, list) or len(points) < 3:
+                    raise ValueError(f"Polygon {shape_id} needs at least 3 points")
+                for point in points:
+                    float(point["x"])
+                    float(point["y"])
+            else:
+                float(shape["x"])
+                float(shape["y"])
+                if float(shape["width"]) <= 0 or float(shape["height"]) <= 0:
+                    raise ValueError(f"Shape {shape_id} has invalid size")
+        if not bg_path or not os.path.isfile(bg_path):
+            raise ValueError(f"Background image not found: {bg_path or '<empty>'}")
+        background_pixmap = QPixmap(bg_path)
+        if background_pixmap.isNull():
+            raise ValueError(f"Background image could not be decoded: {bg_path}")
+    except (KeyError, TypeError, ValueError) as error:
+        QMessageBox.critical(self, "Project error", str(error))
+        return
+
+    if getattr(self, "shape_registry", None):
+        answer = QMessageBox.question(
+            self,
+            "Replace project",
+            "Replace the current project? Unsaved changes will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+    # Remember paths only after the complete project has passed validation.
+    self.current_shapes_json_path = file_path
     self.current_project_folder = project_dir
 
     # 3. Очистка сцены
@@ -49,18 +98,15 @@ def load_scene(self):
 
     # 4. Добавление фонового изображения
     if bg_path and os.path.exists(bg_path):
-        pixmap = QPixmap(bg_path)
-        bg_item = QGraphicsPixmapItem(pixmap)
+        bg_item = QGraphicsPixmapItem(background_pixmap)
         bg_item.setData(Qt.UserRole, bg_path)
         self.scene.addItem(bg_item)
         self.ui.graphicsView.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
     # 5. Восстановление фигур
     for shape in shapes:
-        shape_id = shape.get("id")
+        shape_id = int(shape.get("id", self.shape_id_counter))
         item_type = shape.get("type")
-        if shape_id is None:
-            shape_id = self.shape_id_counter
         color = QColor(shape["color"])
         color.setAlpha(50)
 
