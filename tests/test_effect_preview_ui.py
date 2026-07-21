@@ -65,7 +65,7 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
         self.assertEqual(window.ai_window.selected_shape_id, 31)
         self.assertEqual(window.ai_window.ui.label_14.text(), "31")
-        self.assertEqual(window.ai_window.ui.pushButton.text(), "AI render (WSL)")
+        self.assertEqual(window.ai_window.ui.pushButton.text(), "AI render")
         self.assertEqual(window.ai_window.statusBar().currentMessage(), "AI render: checking")
         window.close()
 
@@ -125,9 +125,9 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
             self.assertTrue(panel.ui.pushButton.isEnabled())
             self.assertEqual(panel.ui.label_14.text(), "41")
-            self.assertIn("backend недоступен", panel.statusBar().currentMessage())
+            self.assertIn("backend не готов", panel.statusBar().currentMessage())
             shown_message = str(warning.call_args.args[2])
-            self.assertIn("python -m uvicorn", shown_message)
+            self.assertIn("backend_server.py", shown_message)
             self.assertNotIn("raw pool details", shown_message)
             window.close()
 

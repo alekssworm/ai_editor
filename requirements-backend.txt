@@ -1,0 +1,14 @@
+# PyTorch is intentionally not installed by this file: its CUDA wheel depends
+# on the OS and GPU driver. Example for the CUDA 12.8 build used by this project:
+# python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+accelerate>=1.12,<2
+diffusers>=0.35,<1
+fastapi>=0.128,<1
+imageio>=2.37,<3
+imageio-ffmpeg>=0.6,<1
+numpy>=2.3,<3
+pillow>=12,<13
+safetensors>=0.7,<1
+transformers>=4.57,<5
+uvicorn>=0.40,<1

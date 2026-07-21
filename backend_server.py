@@ -1,6 +1,6 @@
 
 """
-WSL backend for SVD video generation on NVIDIA GPU.
+Backend for SVD video generation on an NVIDIA GPU.
 
 Endpoints:
   GET  /health
@@ -8,8 +8,8 @@ Endpoints:
   POST /svd/render        -> start render, returns {"job_id": "..."}
   GET  /svd/status/{id}   -> get status/progress/result
 
-This file is designed to run inside WSL venv:
-  python -m uvicorn backend_server:app --host 0.0.0.0 --port 8000 --log-level info
+Run it from the project environment on Windows, WSL, or Linux:
+  python backend_server.py
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -59,7 +60,7 @@ def _append_job_log(job: Dict[str, Any], msg: str) -> None:
 
 
 # -----------------------
-# Path helpers (Win <-> WSL)
+# Path helpers (Windows <-> WSL/Linux)
 # -----------------------
 _drive_re = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
@@ -93,6 +94,15 @@ def wsl_to_win_path(p: str) -> str:
     drive = m.group(1).upper()
     rest = m.group(2).replace("/", "\\")
     return f"{drive}:\\{rest}"
+
+
+def runtime_path(path_str: str) -> str:
+    """Return a path usable by the operating system running this backend."""
+    if not path_str:
+        return path_str
+    if os.name == "nt":
+        return os.path.normpath(wsl_to_win_path(path_str))
+    return win_to_wsl_path(path_str)
 
 
 def resolve_maybe_relative(path_str: str, base_dir: str) -> str:
@@ -488,26 +498,26 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     job = _jobs[job_id]
     _append_job_log(job, "job started")
 
-    # --- resolve paths (Win -> WSL) ---
-    shapes_json_wsl = win_to_wsl_path(req.shapes_json)
-    out_mp4_wsl = win_to_wsl_path(req.out_mp4)
-    out_dir = os.path.dirname(out_mp4_wsl) or "."
+    # --- resolve paths for the host running this backend ---
+    shapes_json_path = runtime_path(req.shapes_json)
+    out_mp4_path = runtime_path(req.out_mp4)
+    out_dir = os.path.dirname(out_mp4_path) or "."
     os.makedirs(out_dir, exist_ok=True)
 
     job["paths"] = {
-        "shapes_json_win": req.shapes_json,
-        "out_mp4_win": req.out_mp4,
-        "shapes_json_wsl": shapes_json_wsl,
-        "out_mp4_wsl": out_mp4_wsl,
+        "shapes_json_requested": req.shapes_json,
+        "out_mp4_requested": req.out_mp4,
+        "shapes_json_runtime": shapes_json_path,
+        "out_mp4_runtime": out_mp4_path,
     }
     _append_job_log(job, f"paths resolved: {job['paths']}")
 
     # --- load shapes.json ---
-    if not os.path.exists(shapes_json_wsl):
-        raise RuntimeError(f"shapes.json not found: {shapes_json_wsl}")
+    if not os.path.exists(shapes_json_path):
+        raise RuntimeError(f"shapes.json not found: {shapes_json_path}")
 
-    base_dir = os.path.dirname(shapes_json_wsl)
-    with open(shapes_json_wsl, "r", encoding="utf-8") as f:
+    base_dir = os.path.dirname(shapes_json_path)
+    with open(shapes_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     shapes = data.get("shapes") or []
@@ -545,19 +555,21 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     _append_job_log(job, f"preset: mode={mode} fps={fps} frames={num_frames} pad={pad_eff}")
 
     # --- choose background (conditioning uses original, base uses without_shape if available) ---
-    without_wsl = os.path.join(base_dir, "without_shape_area.png")
+    without_shape_path = os.path.join(base_dir, "without_shape_area.png")
     bg_path_raw = data.get("background", "")
     bg_path_resolved = resolve_maybe_relative(bg_path_raw, base_dir)
-    bg_path_wsl = win_to_wsl_path(bg_path_resolved)
-    if not os.path.exists(bg_path_wsl):
-        raise RuntimeError(f"background image not found: {bg_path_wsl} (from {bg_path_raw})")
+    background_path = runtime_path(bg_path_resolved)
+    if not os.path.exists(background_path):
+        raise RuntimeError(
+            f"background image not found: {background_path} (from {bg_path_raw})"
+        )
 
     # --- pieces dir (optional) ---
     pieces_dir_raw = req.pieces_dir or os.path.join(base_dir, "pieces")
     pieces_dir_resolved = resolve_maybe_relative(pieces_dir_raw, base_dir)
-    pieces_dir_wsl = win_to_wsl_path(pieces_dir_resolved)
-    if not os.path.isdir(pieces_dir_wsl):
-        pieces_dir_wsl = ""
+    pieces_dir_path = runtime_path(pieces_dir_resolved)
+    if not os.path.isdir(pieces_dir_path):
+        pieces_dir_path = ""
 
     # --- init SVD pipeline and base frames ---
     job["state"] = "running"
@@ -565,19 +577,30 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     _append_job_log(job, "loading SVD pipeline (first time may take long)")
 
     import torch
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cuda_available = torch.cuda.is_available()
+    allow_cpu = os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not cuda_available and not allow_cpu:
+        raise RuntimeError(
+            "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
+            "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
+        )
+    device = "cuda" if cuda_available else "cpu"
     pipe = _load_svd_pipeline(device=device)
 
     from PIL import Image, ImageFilter
     import numpy as np
 
-    bg_orig = Image.open(bg_path_wsl).convert("RGB")
+    bg_orig = Image.open(background_path).convert("RGB")
     W, H = bg_orig.size
 
     base_bg = bg_orig.copy()
-    if os.path.exists(without_wsl):
+    if os.path.exists(without_shape_path):
         try:
-            wimg = Image.open(without_wsl)
+            wimg = Image.open(without_shape_path)
             if wimg.size == bg_orig.size:
                 if wimg.mode in ("RGBA", "LA") or ("transparency" in getattr(wimg, "info", {})):
                     base_bg = Image.alpha_composite(bg_orig.convert("RGBA"), wimg.convert("RGBA")).convert("RGB")
@@ -663,7 +686,11 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
             tmp = Image.new("L", (pw, ph), 0)
 
-            piece_path = os.path.join(pieces_dir_wsl, f"shape_{sid}.png") if pieces_dir_wsl else ""
+            piece_path = (
+                os.path.join(pieces_dir_path, f"shape_{sid}.png")
+                if pieces_dir_path
+                else ""
+            )
             if piece_path and os.path.exists(piece_path):
                 piece_rgba = Image.open(piece_path).convert("RGBA")
                 if piece_rgba.size != (w, h):
@@ -767,14 +794,21 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
 
     import imageio
     writer = imageio.get_writer(
-        out_mp4_wsl, fps=fps, format="FFMPEG", codec="libx264", pixelformat="yuv420p"
+        out_mp4_path,
+        fps=fps,
+        format="FFMPEG",
+        codec="libx264",
+        pixelformat="yuv420p",
     )
     for t_idx in range(num_frames):
         writer.append_data(base_frames[t_idx][..., :3])
     writer.close()
 
     job["state"] = "done"
-    job["result"] = {"out_mp4_wsl": out_mp4_wsl, "out_mp4_win": wsl_to_win_path(out_mp4_wsl)}
+    job["result"] = {
+        "out_mp4": out_mp4_path,
+        "out_mp4_win": wsl_to_win_path(out_mp4_path),
+    }
     job["progress"] = {"stage": "done", "current": total_layers, "total": total_layers}
     _append_job_log(job, f"done: {job['result']}")
 
@@ -805,6 +839,7 @@ def root():
     return {
         "service": "ai_editor backend",
         "ok": True,
+        "runtime": os.name,
         "health": "/health",
         "gpu": "/gpu",
         "render": "/svd/render",
@@ -817,6 +852,7 @@ def health():
         "ok": True,
         "service": "ai_editor backend",
         "version": app.version,
+        "runtime": os.name,
         "ts": _now(),
     }
 
@@ -869,3 +905,24 @@ def svd_status(job_id: str):
         raise HTTPException(status_code=404, detail="job_id not found")
     # return a safe copy
     return job
+
+
+def main() -> int:
+    """Run the API without requiring users to remember the uvicorn command."""
+    try:
+        import uvicorn
+    except ModuleNotFoundError:
+        print(
+            "Не установлен uvicorn. Установите его в окружение проекта:\n"
+            f'"{sys.executable}" -m pip install uvicorn'
+        )
+        return 2
+
+    host = os.environ.get("AI_BACKEND_HOST", "0.0.0.0")
+    port = int(os.environ.get("AI_BACKEND_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port, log_level=LOG_LEVEL.lower())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

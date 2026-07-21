@@ -554,9 +554,9 @@ class AIWindow(QMainWindow):
         self.ui.setupUi(self)
         self.selected_shape_id = None
         if hasattr(self.ui, "pushButton"):
-            self.ui.pushButton.setText("AI render (WSL)")
+            self.ui.pushButton.setText("AI render")
             self.ui.pushButton.setToolTip(
-                "Stable Video Diffusion render; requires backend_server.py in WSL"
+                "Stable Video Diffusion render; requires backend_server.py"
             )
 
         self.scene = QGraphicsScene(self)
@@ -1001,21 +1001,21 @@ class AIWindow(QMainWindow):
             out_mp4 = os.path.join(base_dir, "result.mp4")
             self.render_out_mp4_path = out_mp4
 
-        # Запускаем удалённый рендер в WSL backend (CUDA на RTX 4070)
+        # Запускаем удалённый GPU-рендер через backend.
         self._start_remote_render(shapes_json, out_mp4, masks_dir, pieces_dir)
 
 
     # ---------------------------
-    # Remote render via WSL backend
+    # Remote render via backend
     # ---------------------------
     def _start_remote_render(self, shapes_json: str, out_mp4: str, masks_dir: str, pieces_dir: str):
-        """Стартуем SVD-рендер на backend (WSL) и начинаем опрос статуса."""
+        """Стартуем SVD-рендер на backend и начинаем опрос статуса."""
         if self._svd_job_id:
             QMessageBox.information(self, "AI render", "AI render уже выполняется.")
             return
         if hasattr(self.ui, "pushButton"):
             self.ui.pushButton.setEnabled(False)
-        self._set_render_status("AI render: проверка WSL backend...")
+        self._set_render_status("AI render: проверка backend...")
 
         from backend_async import run_in_thread
         import backend_client
@@ -1056,12 +1056,12 @@ class AIWindow(QMainWindow):
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
             self._svd_job_id = None
-            self._set_render_status("AI render: backend недоступен", 8000)
+            self._set_render_status("AI render: backend не готов", 8000)
             try:
                 print(f"[DEBUG] [RENDER] error: {msg}")
             except Exception:
                 pass
-            QMessageBox.warning(self, "AI backend недоступен", str(msg))
+            QMessageBox.warning(self, "AI render недоступен", str(msg))
 
         run_in_thread(
             self,
@@ -1144,14 +1144,18 @@ class AIWindow(QMainWindow):
             if hasattr(self.ui, "pushButton"):
                 self.ui.pushButton.setEnabled(True)
             result = status.get("result") or {}
-            out_win = result.get("out_mp4_win") or result.get("out_mp4") or ""
-            out_wsl = result.get("out_mp4_wsl") or ""
+            output_path = (
+                result.get("out_mp4_win")
+                or result.get("out_mp4")
+                or result.get("out_mp4_wsl")
+                or ""
+            )
             try:
-                print(f"[DEBUG] [RENDER] done out_win={out_win} out_wsl={out_wsl}")
+                print(f"[DEBUG] [RENDER] done output={output_path}")
             except Exception:
                 pass
             self._set_render_status("AI render: готово", 8000)
-            QMessageBox.information(self, "Render", f"Saved:\n{out_win or out_wsl}")
+            QMessageBox.information(self, "Render", f"Saved:\n{output_path}")
             return
 
         if state == "error":

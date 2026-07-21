@@ -1,6 +1,6 @@
 # backend_client.py
 """
-Windows-side client to call WSL backend.
+Editor-side client for the local or remote AI backend.
 Usage:
   import backend_client
   print(backend_client.gpu_info())
@@ -34,8 +34,10 @@ class BackendRequestError(BackendClientError):
 def _backend_unavailable_message() -> str:
     return (
         f"AI backend недоступен: {BASE}\n\n"
-        "Этот режим требует отдельный WSL/NVIDIA server. Запустите в WSL:\n"
-        "python -m uvicorn backend_server:app --host 0.0.0.0 --port 8000\n\n"
+        "Запустите backend в отдельном терминале из папки проекта:\n"
+        ".\\.venv\\Scripts\\python.exe backend_server.py\n\n"
+        "Для WSL/Linux: python backend_server.py\n"
+        "Если отсутствует uvicorn: python -m pip install uvicorn\n\n"
         "Локальный deterministic Preview работает без сервера."
     )
 
@@ -126,8 +128,23 @@ def health(timeout: float = 3.0) -> Dict[str, Any]:
     return result
 
 
-def gpu_info(timeout: float = 3.0) -> Dict[str, Any]:
+def gpu_info(timeout: float = 20.0) -> Dict[str, Any]:
     return _req("GET", "/gpu", timeout=timeout)
+
+
+def ensure_backend_ready(
+    *, health_timeout: float = 2.0, gpu_timeout: float = 20.0
+) -> Dict[str, Any]:
+    """Verify that the API is reachable and has a CUDA-capable PyTorch build."""
+    health(timeout=health_timeout)
+    gpu = gpu_info(timeout=gpu_timeout)
+    if gpu.get("cuda_available") is not True:
+        details = gpu.get("error") or gpu.get("torch") or "CUDA не обнаружена"
+        raise BackendRequestError(
+            "AI backend запущен, но CUDA недоступна. "
+            f"Установите CUDA-сборку PyTorch для NVIDIA GPU. Детали: {details}"
+        )
+    return gpu
 
 
 def start_svd_render(
@@ -179,9 +196,17 @@ def start_svd_render(
     return str(job_id)
 
 
-def start_svd_render_checked(*args, health_timeout: float = 2.0, **kwargs) -> str:
+def start_svd_render_checked(
+    *args,
+    health_timeout: float = 2.0,
+    gpu_timeout: float = 20.0,
+    **kwargs,
+) -> str:
     """Fail fast with an actionable error before submitting a GPU render job."""
-    health(timeout=health_timeout)
+    ensure_backend_ready(
+        health_timeout=health_timeout,
+        gpu_timeout=gpu_timeout,
+    )
     return start_svd_render(*args, **kwargs)
 
 
