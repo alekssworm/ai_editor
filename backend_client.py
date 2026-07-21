@@ -8,15 +8,21 @@ Usage:
 from __future__ import annotations
 import json
 import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 import requests
 
 BASE = os.environ.get("AI_BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
 DEBUG = os.environ.get("AI_BACKEND_DEBUG", "1") not in ("0", "false", "False", "")
 LOGFILE = os.environ.get("AI_BACKEND_CLIENT_LOG", os.path.join(os.getcwd(), "backend_client.log"))
 _session = requests.Session()
+_autostart_lock = threading.Lock()
 
 
 class BackendClientError(RuntimeError):
@@ -31,8 +37,13 @@ class BackendRequestError(BackendClientError):
     pass
 
 
-def _backend_unavailable_message() -> str:
-    return (
+def _backend_unavailable_message(*, autostart_attempted: bool = False) -> str:
+    prefix = (
+        "Автозапуск локального backend не удался.\n\n"
+        if autostart_attempted
+        else ""
+    )
+    return prefix + (
         f"AI backend недоступен: {BASE}\n\n"
         "Запустите backend в отдельном терминале из папки проекта:\n"
         ".\\.venv\\Scripts\\python.exe backend_server.py\n\n"
@@ -40,6 +51,110 @@ def _backend_unavailable_message() -> str:
         "Если отсутствует uvicorn: python -m pip install uvicorn\n\n"
         "Локальный deterministic Preview работает без сервера."
     )
+
+
+def _is_local_backend_url() -> bool:
+    try:
+        host = (urlparse(BASE).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _win_to_wsl_project_path(path: Path) -> str:
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    if len(drive) != 1:
+        raise ValueError(f"WSL autostart requires a drive path: {resolved}")
+    suffix = resolved.as_posix()[2:].lstrip("/")
+    return f"/mnt/{drive}/{suffix}"
+
+
+def _backend_launch_spec():
+    """Return the preferred local backend command and its working directory."""
+    project_dir = Path(__file__).resolve().parent
+    if os.name == "nt":
+        # Linux venv executables are symlinks. Path.exists() can raise WinError
+        # 1920 when Windows tries to follow their /usr/bin target, so inspect
+        # the containing directory instead.
+        wsl_bin = project_dir / ".venv-wsl" / "bin"
+        if wsl_bin.is_dir():
+            return (
+                [
+                    "wsl.exe",
+                    "--cd",
+                    _win_to_wsl_project_path(project_dir),
+                    "--",
+                    "./.venv-wsl/bin/python",
+                    "backend_server.py",
+                ],
+                None,
+            )
+
+        windows_python = project_dir / ".venv" / "Scripts" / "python.exe"
+        if windows_python.exists():
+            return ([str(windows_python), "backend_server.py"], str(project_dir))
+        return ([sys.executable, "backend_server.py"], str(project_dir))
+
+    local_python = project_dir / ".venv-wsl" / "bin" / "python"
+    if not local_python.exists():
+        local_python = project_dir / ".venv" / "bin" / "python"
+    executable = str(local_python) if local_python.exists() else sys.executable
+    return ([executable, "backend_server.py"], str(project_dir))
+
+
+def try_start_local_backend(wait_seconds: float = 25.0) -> bool:
+    """Start this project's backend when BASE points at the local machine."""
+    enabled = os.environ.get("AI_BACKEND_AUTOSTART", "1") not in {
+        "0",
+        "false",
+        "False",
+        "",
+    }
+    if not enabled or not _is_local_backend_url():
+        return False
+
+    with _autostart_lock:
+        # Another render request may have started the service while we waited.
+        try:
+            health(timeout=0.75)
+            return True
+        except BackendUnavailableError:
+            pass
+
+        command, cwd = _backend_launch_spec()
+        _log(f"autostart backend: {' '.join(command)}")
+        popen_kwargs = {
+            "cwd": cwd,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.DETACHED_PROCESS
+            )
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+        except (OSError, ValueError) as error:
+            _log(f"backend autostart failed: {error}")
+            return False
+
+        deadline = time.monotonic() + max(1.0, float(wait_seconds))
+        while time.monotonic() < deadline:
+            try:
+                health(timeout=1.0)
+                _log(f"backend autostart ready (pid={process.pid})")
+                return True
+            except BackendUnavailableError:
+                if process.poll() is not None:
+                    _log(f"backend autostart exited with code {process.returncode}")
+                    return False
+                time.sleep(0.4)
+        _log("backend autostart timed out")
+        return False
 
 
 def _log(msg: str, data: Any = None) -> None:
@@ -210,10 +325,20 @@ def start_svd_render_checked(
     **kwargs,
 ) -> str:
     """Fail fast with an actionable error before submitting a GPU render job."""
-    ensure_backend_ready(
-        health_timeout=health_timeout,
-        gpu_timeout=gpu_timeout,
-    )
+    try:
+        ensure_backend_ready(
+            health_timeout=health_timeout,
+            gpu_timeout=gpu_timeout,
+        )
+    except BackendUnavailableError as error:
+        if not try_start_local_backend():
+            raise BackendUnavailableError(
+                _backend_unavailable_message(autostart_attempted=True)
+            ) from error
+        ensure_backend_ready(
+            health_timeout=health_timeout,
+            gpu_timeout=gpu_timeout,
+        )
     return start_svd_render(*args, **kwargs)
 
 

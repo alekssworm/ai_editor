@@ -52,6 +52,56 @@ class BackendClientTests(unittest.TestCase):
         ready.assert_called_once_with(health_timeout=0.25, gpu_timeout=4.0)
         start.assert_called_once()
 
+    def test_checked_render_autostarts_local_backend_after_connection_error(self) -> None:
+        unavailable = backend_client.BackendUnavailableError("offline")
+        with (
+            patch.object(
+                backend_client,
+                "ensure_backend_ready",
+                side_effect=[unavailable, {"cuda_available": True}],
+            ) as ready,
+            patch.object(
+                backend_client,
+                "try_start_local_backend",
+                return_value=True,
+            ) as autostart,
+            patch.object(
+                backend_client,
+                "start_svd_render",
+                return_value="job-autostart",
+            ),
+        ):
+            result = backend_client.start_svd_render_checked(
+                "H:/project/shapes.json",
+                "H:/project/result.mp4",
+            )
+
+        self.assertEqual(result, "job-autostart")
+        self.assertEqual(ready.call_count, 2)
+        autostart.assert_called_once_with()
+
+    def test_local_backend_launcher_waits_until_health_is_ready(self) -> None:
+        process = Mock(pid=1234)
+        unavailable = backend_client.BackendUnavailableError("offline")
+        with (
+            patch.object(backend_client, "_is_local_backend_url", return_value=True),
+            patch.object(
+                backend_client,
+                "_backend_launch_spec",
+                return_value=(["python", "backend_server.py"], "project"),
+            ),
+            patch.object(
+                backend_client,
+                "health",
+                side_effect=[unavailable, {"ok": True}],
+            ),
+            patch.object(backend_client.subprocess, "Popen", return_value=process) as popen,
+        ):
+            started = backend_client.try_start_local_backend(wait_seconds=1)
+
+        self.assertTrue(started)
+        popen.assert_called_once()
+
     def test_backend_ready_rejects_cpu_only_torch(self) -> None:
         with (
             patch.object(backend_client, "health"),

@@ -279,6 +279,11 @@ class EffectPreviewDialogTests(unittest.TestCase):
                     "request",
                     side_effect=requests.ConnectionError("raw pool details"),
                 ),
+                patch.object(
+                    backend_client,
+                    "try_start_local_backend",
+                    return_value=False,
+                ),
                 patch("ai_panel_logic.QMessageBox.warning") as warning,
             ):
                 panel.on_render_clicked()
