@@ -46,6 +46,9 @@ class WaterFlowParams:
     advection: float = 0.6
     cross_flow: float = 0.7
     shimmer: float = 0.04
+    highlight: float = 0.18
+    foam_amount: float = 0.35
+    turbulence: float = 0.25
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, float] | None) -> "WaterFlowParams":
@@ -69,7 +72,32 @@ class WaterFlowParams:
             shimmer=float(
                 np.clip(values.get("shimmer", defaults.shimmer), 0.0, 0.25)
             ),
+            highlight=float(
+                np.clip(values.get("highlight", defaults.highlight), 0.0, 1.0)
+            ),
+            foam_amount=float(
+                np.clip(values.get("foam_amount", defaults.foam_amount), 0.0, 1.0)
+            ),
+            turbulence=float(
+                np.clip(values.get("turbulence", defaults.turbulence), 0.0, 1.0)
+            ),
         )
+
+
+def _water_highlight_color(assets: EffectAssets) -> np.ndarray:
+    colors = []
+    for value in assets.style.palette:
+        text = str(value).lstrip("#")
+        if len(text) != 6:
+            continue
+        try:
+            colors.append(np.array([int(text[i : i + 2], 16) for i in (0, 2, 4)]))
+        except ValueError:
+            continue
+    if not colors:
+        return np.array([205.0, 230.0, 242.0], dtype=np.float32)
+    color = max(colors, key=lambda item: float(item @ np.array([0.21, 0.72, 0.07])))
+    return (color.astype(np.float32) * 0.45 + 255.0 * 0.55).astype(np.float32)
 
 
 class WaterFlowEffect:
@@ -94,19 +122,17 @@ class WaterFlowEffect:
         # floating-point rounding.
         phase = np.float32(np.pi * 2.0 * (float(t) % 1.0) * config.cycles)
         rng = np.random.default_rng(assets.seed)
-        phase_a, phase_b = rng.uniform(0.0, np.pi * 2.0, size=2).astype(np.float32)
+        phase_a, phase_b, phase_c = rng.uniform(
+            0.0, np.pi * 2.0, size=3
+        ).astype(np.float32)
         frequency_scale = np.float32(rng.uniform(0.9, 1.1))
 
         height, width = assets.mask.shape
         y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        raw_flow_x = assets.flow[..., 0]
-        raw_flow_y = assets.flow[..., 1]
-        flow_speed = np.clip(
-            np.hypot(raw_flow_x, raw_flow_y), 0.0, 1.0
-        ).astype(np.float32)
-        safe_length = np.maximum(flow_speed, 1e-6)
-        flow_x = raw_flow_x / safe_length
-        flow_y = raw_flow_y / safe_length
+        flow_x = assets.flow[..., 0]
+        flow_y = assets.flow[..., 1]
+        flow_speed = np.asarray(assets.speed, dtype=np.float32)
+        mobility = np.clip(1.0 - assets.obstacles, 0.0, 1.0)
         style_scale = np.float32(
             np.clip(
                 0.85 + assets.style.edge_softness * 0.25 - assets.style.grain * 0.1,
@@ -117,11 +143,30 @@ class WaterFlowEffect:
         along = x * flow_x + y * flow_y
         across = -x * flow_y + y * flow_x
 
+        # Temporal multipliers stay integer so t=1 wraps exactly to t=0.
+        # Local speed changes wavelength/amplitude instead of breaking the loop.
+        local_phase = phase
+        spatial_speed = 0.72 + flow_speed * 0.56
         wave_a = np.sin(
-            along * (np.pi * 2.0 / config.wavelength) * frequency_scale - phase + phase_a
+            along
+            * (np.pi * 2.0 / config.wavelength)
+            * frequency_scale
+            * spatial_speed
+            - local_phase
+            + phase_a
         )
         wave_b = np.sin(
-            across * (np.pi * 2.0 / config.secondary_wavelength) - phase * 2.0 + phase_b
+            across
+            * (np.pi * 2.0 / config.secondary_wavelength)
+            * spatial_speed
+            - local_phase * 2.0
+            + phase_b
+        )
+        wave_c = np.sin(
+            (along + across * 0.38)
+            * (np.pi * 2.0 / max(8.0, config.wavelength * 0.46))
+            - local_phase * 3.0
+            + phase_c
         )
 
         depth_scale = 0.65 + assets.depth * 0.7
@@ -129,10 +174,15 @@ class WaterFlowEffect:
             np.float32(config.strength)
             * depth_scale
             * style_scale
-            * (0.15 + flow_speed * 0.85)
+            * flow_speed
+            * mobility
         )
-        displacement_along = amplitude * (0.2 + config.advection * 0.45) * wave_a
-        displacement_across = amplitude * config.cross_flow * wave_b
+        displacement_along = amplitude * (0.2 + config.advection * 0.45) * (
+            wave_a + wave_c * config.turbulence * 0.35
+        )
+        displacement_across = amplitude * config.cross_flow * (
+            wave_b + wave_c * config.turbulence * 0.28
+        )
         dx = flow_x * displacement_along - flow_y * displacement_across
         dy = flow_y * displacement_along + flow_x * displacement_across
 
@@ -145,6 +195,41 @@ class WaterFlowEffect:
                 * (0.6 + assets.style.contrast * 0.4)
             )
             warped = np.clip(warped + shimmer[..., None], 0.0, 255.0)
-        alpha = np.clip(assets.mask * config.opacity, 0.0, 1.0)[..., None]
+
+        highlight_color = _water_highlight_color(assets)
+        crest = np.clip(
+            wave_a * 0.48 + wave_b * 0.28 + wave_c * 0.24,
+            0.0,
+            1.0,
+        )
+        highlight_alpha = (
+            crest**2
+            * config.highlight
+            * flow_speed
+            * mobility
+            * assets.mask
+        )[..., None]
+        warped = warped * (1.0 - highlight_alpha) + highlight_color * highlight_alpha
+
+        foam_pulse = 0.7 + 0.3 * np.sin(
+            local_phase * 2.0
+            + along * (np.pi * 2.0 / max(10.0, config.secondary_wavelength))
+            + phase_c
+        )
+        foam_alpha = np.clip(
+            assets.foam * foam_pulse * config.foam_amount * assets.mask,
+            0.0,
+            0.9,
+        )[..., None]
+        foam_color = highlight_color * 0.35 + 255.0 * 0.65
+
+        alpha = np.clip(
+            assets.mask * config.opacity * mobility,
+            0.0,
+            1.0,
+        )[..., None]
         composed = warped * alpha + rgb * (1.0 - alpha)
+        # Foam is composited after motion protection so banks/rocks stay still
+        # while the contact foam remains visible beside them.
+        composed = composed * (1.0 - foam_alpha) + foam_color * foam_alpha
         return Image.fromarray(np.clip(np.rint(composed), 0, 255).astype(np.uint8), mode="RGB")

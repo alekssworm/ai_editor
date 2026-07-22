@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 
-ASSET_VERSION = 1
+ASSET_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -45,6 +45,9 @@ class EffectAssets:
     mask: np.ndarray
     depth: np.ndarray
     flow: np.ndarray
+    speed: np.ndarray | None = None
+    obstacles: np.ndarray | None = None
+    foam: np.ndarray | None = None
     style: StyleProfile = field(default_factory=StyleProfile)
     textures: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -53,11 +56,36 @@ class EffectAssets:
     def __post_init__(self) -> None:
         self.effect_type = str(self.effect_type).strip().lower()
         self.seed = int(self.seed)
-        self.version = int(self.version)
+        source_version = int(self.version)
         self.mask = np.clip(np.asarray(self.mask, dtype=np.float32), 0.0, 1.0)
         self.depth = np.clip(np.asarray(self.depth, dtype=np.float32), 0.0, 1.0)
         self.flow = np.asarray(self.flow, dtype=np.float32)
+        flow_length = np.linalg.norm(self.flow, axis=-1)
+        if self.speed is None:
+            self.speed = np.clip(flow_length, 0.0, 1.0).astype(np.float32)
+        else:
+            self.speed = np.clip(
+                np.asarray(self.speed, dtype=np.float32), 0.0, 1.0
+            )
+        safe_length = np.maximum(flow_length[..., None], 1e-6)
+        self.flow = np.where(
+            flow_length[..., None] > 1e-6,
+            self.flow / safe_length,
+            0.0,
+        ).astype(np.float32)
+        self.obstacles = self._optional_map(self.obstacles)
+        self.foam = self._optional_map(self.foam)
+        # Version 1 encoded speed in flow magnitude. Construction performs the
+        # migration in memory, while the next save writes the version 2 maps.
+        if source_version not in (1, ASSET_VERSION):
+            raise ValueError(f"Unsupported EffectAssets version: {source_version}")
+        self.version = ASSET_VERSION
         self.validate()
+
+    def _optional_map(self, value: np.ndarray | None) -> np.ndarray:
+        if value is None:
+            return np.zeros(self.mask.shape, dtype=np.float32)
+        return np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
 
     @property
     def height(self) -> int:
@@ -82,7 +110,17 @@ class EffectAssets:
             raise ValueError("depth must have the same shape as mask")
         if self.flow.shape != (*self.mask.shape, 2):
             raise ValueError("flow must have shape (height, width, 2)")
-        for name, value in (("mask", self.mask), ("depth", self.depth), ("flow", self.flow)):
+        for name in ("speed", "obstacles", "foam"):
+            if getattr(self, name).shape != self.mask.shape:
+                raise ValueError(f"{name} must have the same shape as mask")
+        for name, value in (
+            ("mask", self.mask),
+            ("depth", self.depth),
+            ("flow", self.flow),
+            ("speed", self.speed),
+            ("obstacles", self.obstacles),
+            ("foam", self.foam),
+        ):
             if not np.isfinite(value).all():
                 raise ValueError(f"{name} contains non-finite values")
 
@@ -99,5 +137,8 @@ class EffectAssets:
                 "mask": "mask.png",
                 "depth": "depth.png",
                 "flow": "flow.npz",
+                "speed": "speed.png",
+                "obstacles": "obstacles.png",
+                "foam": "foam.png",
             },
         }

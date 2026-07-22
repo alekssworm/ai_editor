@@ -40,11 +40,16 @@ class EffectPreviewDialogTests(unittest.TestCase):
                 shape_id=8,
                 fps=12,
                 params={"strength": 4.0},
+                debug_maps={"Speed": Image.new("RGB", (32, 24), "red")},
             )
             dialog = EffectPreviewDialog(result)
 
             self.assertTrue(dialog._timer.isActive())
             self.assertEqual(dialog._frame_index, 0)
+            self.assertEqual(dialog.map_selector.itemText(1), "Speed")
+            dialog.map_selector.setCurrentText("Speed")
+            self.assertFalse(dialog.play_button.isEnabled())
+            dialog.map_selector.setCurrentText("Effect")
             dialog._next_frame()
             self.assertEqual(dialog._frame_index, 1)
             dialog.close()
@@ -88,6 +93,8 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
         window = MainWindow()
         self.assertEqual(window.ui.preview_button.text(), "Local preview")
+        self.assertEqual(window.ai_prepare_checkbox.text(), "AI prep")
+        self.assertFalse(window.ai_prepare_checkbox.isChecked())
         self.assertEqual(window.ui.save_button.text(), "Save project")
         self.assertEqual(window.ai_window.ui.pushButton_9.text(), "Save effects")
         self.assertTrue(window.ai_window.ui.water_button.isEnabled())
@@ -499,6 +506,31 @@ class EffectPreviewDialogTests(unittest.TestCase):
 
         self.assertEqual(len(window.flow_guides[12]), 2)
         self.assertGreater(window.flow_directions[12][1], 0.0)
+
+        zone_start = window.ui.graphicsView.mapFromScene(QPointF(75, 45))
+        zone_end = window.ui.graphicsView.mapFromScene(QPointF(95, 45))
+        QTest.mousePress(
+            window.ui.graphicsView.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            zone_start,
+        )
+        QTest.mouseMove(window.ui.graphicsView.viewport(), zone_end, delay=5)
+        QTest.mouseRelease(
+            window.ui.graphicsView.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            zone_end,
+        )
+        self.app.processEvents()
+
+        fast_zone = window.effect_overrides[12]["speed_zones"][0]
+        self.assertEqual(fast_zone["value"], 1.5)
+        self.assertAlmostEqual(fast_zone["radius"], 20.0, delta=0.3)
+        QTest.keyClick(window.ui.graphicsView.viewport(), Qt.Key.Key_Delete)
+        self.app.processEvents()
+        self.assertNotIn(12, window.flow_guides)
+        self.assertNotIn(12, window.effect_overrides)
         window.flow_direction_controller.cancel()
         self.assertFalse(window.flow_direction_controller.active)
         window.close()

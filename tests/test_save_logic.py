@@ -39,6 +39,11 @@ class SaveLogicTests(unittest.TestCase):
             window.flow_guides[1] = [
                 {"start": [5.0, 10.0], "end": [25.0, 10.0]}
             ]
+            window.effect_overrides[1] = {
+                "speed_zones": [
+                    {"center": [12.0, 14.0], "radius": 6.0, "value": 0.35}
+                ]
+            }
             window.current_project_folder = directory
 
             with (
@@ -60,7 +65,18 @@ class SaveLogicTests(unittest.TestCase):
             self.assertEqual(project["flow_directions"]["1"], {"x": 1.0, "y": 0.0})
             self.assertEqual(
                 project["flow_guides"]["1"],
-                [{"start": [5.0, 10.0], "end": [25.0, 10.0]}],
+                [
+                    {
+                        "start": [5.0, 10.0],
+                        "control1": [11.666666666666668, 10.0],
+                        "control2": [18.333333333333336, 10.0],
+                        "end": [25.0, 10.0],
+                    }
+                ],
+            )
+            self.assertEqual(
+                project["effect_overrides"]["1"]["speed_zones"],
+                [{"center": [12.0, 14.0], "radius": 6.0, "value": 0.35}],
             )
             folder_dialog.assert_not_called()
             information.assert_called_once()

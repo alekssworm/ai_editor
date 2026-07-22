@@ -6,6 +6,7 @@ from draw_tools import SelectableCircleItem, ResizableRectItem, ShapeItem
 from draw_tools import SelectablePolygonItem
 from effect_engine.project import (
     PROJECT_SCHEMA_VERSION,
+    serialize_effect_overrides,
     serialize_flow_directions,
     serialize_flow_guides,
 )
@@ -470,6 +471,9 @@ def _save_outputs_impl(self, folder=None):
     flow_guides = serialize_flow_guides(
         getattr(self, "flow_guides", {}), valid_ids
     )
+    effect_overrides = serialize_effect_overrides(
+        getattr(self, "effect_overrides", {}), valid_ids
+    )
     _write_json_atomic(
         project_path,
         {
@@ -479,6 +483,7 @@ def _save_outputs_impl(self, folder=None):
             "shape_cards": filtered_cards,
             "flow_directions": flow_directions,
             "flow_guides": flow_guides,
+            "effect_overrides": effect_overrides,
         },
     )
 

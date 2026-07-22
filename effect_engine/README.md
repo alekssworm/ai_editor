@@ -3,7 +3,8 @@
 The pipeline deliberately separates the potentially non-deterministic preparation stage from frame rendering:
 
 1. `PreparationPipeline` turns an image and rough mask into versioned `EffectAssets`.
-2. `EffectAssetStore` saves the mask, depth map, flow map, style profile, textures and seed.
+2. `EffectAssetStore` saves mask, depth, direction, speed, obstacle and foam maps,
+   plus the style profile, textures and seed.
 3. `DeterministicEffectEngine` renders every frame from the saved assets and normalized time `t`.
 
 The default preparation providers are lightweight deterministic fallbacks. SAM/Depth Anything or a texture-generation service can later implement the same provider protocols without changing the renderer.
@@ -60,14 +61,54 @@ light cards produce a clear error until their renderers are implemented.
 ### Flow direction
 
 Select an area and press `settings`, then drag over the area in the intended
-direction of motion. A normal drag replaces the flow; `Shift`+drag adds up to
-eight local guides for bends, banks and waterfalls. The guides are displayed as
-cyan arrows, saved under `flow_guides` in `shapes.json`, and converted to a dense
-flow/speed map during preparation. Right-click, `Esc`, or a second press on
-`settings` finishes editing.
+direction of motion. The pointer trail becomes a cubic curve instead of a single
+straight vector. A normal drag replaces the flow and `Shift`+drag adds up to
+eight curves for bends, banks and waterfalls.
+
+The same tool paints manual corrections with modifier-drag gestures:
+
+- `Ctrl`: faster water (green); `Ctrl+Shift`: slower water (orange)
+- `Alt`: protected/immovable structure (red); `Alt+Shift`: foam (white)
+- `Ctrl+Alt`: include in AI mask (blue); `Ctrl+Alt+Shift`: exclude (purple)
+- middle-button drag: deeper water (cyan); `Shift`+middle: shallower (navy)
+
+Curves are saved under `flow_guides`; corrections are saved separately under
+`effect_overrides`. Re-running preparation therefore replaces AI proposals but
+reapplies the user's edits afterwards. `Esc` or a second press on `settings`
+finishes editing; `Delete` clears the selected area's manual curves and maps.
 
 Water presets also apply effect-specific safe limits to strength and loop
 cycles. Still water stays subtle, while river, fast river and waterfall allow
 progressively stronger motion. These limits are shared by the local renderer
 and AI post-processing so extreme settings do not turn the selected area into
 rubber.
+
+## Optional AI preparation
+
+The `AI prep` checkbox replaces the offline mask/depth proposal providers with
+Transformers pipelines. The default models follow the official Hugging Face
+mask-generation and Depth Anything pipeline APIs:
+
+- `facebook/sam-vit-base` refines the rough selected area.
+- `LiheYoung/depth-anything-small-hf` proposes monocular depth.
+
+Models are downloaded on first use and cached in the running editor process.
+Leave the checkbox disabled for the lightweight deterministic preparation path.
+Install `torch` for the intended CPU/CUDA environment first, then install the
+client-side model API in the editor virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install "transformers>=4.57,<5"
+```
+
+The model and device can be changed without code edits:
+
+```powershell
+$env:AI_EDITOR_MASK_MODEL = "facebook/sam-vit-base"
+$env:AI_EDITOR_DEPTH_MODEL = "LiheYoung/depth-anything-small-hf"
+$env:AI_EDITOR_AI_DEVICE = "0"  # CUDA device; use -1 for CPU
+```
+
+The Preview dialog can display `Mask`, `Depth`, `Flow`, `Speed`, `Obstacles`
+and `Foam` before export. Full-resolution export reuses the prepared assets and
+does not run the AI models a second time.

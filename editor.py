@@ -5,7 +5,7 @@ import backend_client
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QGraphicsScene,
+    QApplication, QCheckBox, QMainWindow, QGraphicsScene,
 )
 
 from ai_panel_logic import AIWindow
@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self.shape_id_counter = 1
         self.flow_directions = {}  # {shape_id: normalized (x, y)}
         self.flow_guides = {}  # {shape_id: [{start: [x,y], end: [x,y]}]}
+        self.effect_overrides = {}  # manual speed/obstacle/foam zones by shape
 
         # Кнопки UI
         self.ui.tools_Button.clicked.connect(lambda: toggle_tools_panel(self))
@@ -91,6 +92,15 @@ class MainWindow(QMainWindow):
             "Deterministic preview; runs locally without AI backend"
         )
         self.ui.preview_button.clicked.connect(lambda: start_effect_preview(self))
+        self.ai_prepare_checkbox = QCheckBox("AI prep")
+        self.ai_prepare_checkbox.setToolTip(
+            "Use optional SAM and Depth Anything proposals for mask/depth. "
+            "Models are downloaded on first use; Local preview remains the fallback."
+        )
+        self.ui.horizontalLayout_4.insertWidget(
+            max(0, self.ui.horizontalLayout_4.count() - 1),
+            self.ai_prepare_checkbox,
+        )
 
         # Подключение селектора
         self.scene.selectionChanged.connect(lambda: on_shape_selected(self))
@@ -99,7 +109,9 @@ class MainWindow(QMainWindow):
         self.current_shape_color = QColor(255, 0, 0, 50)
         self.draw_controller = DrawingToolController(self.scene, self)
         self.flow_direction_controller = FlowDirectionController(self)
-        self.ui.settings.setToolTip("Set flow direction for the selected area")
+        self.ui.settings.setToolTip(
+            "Edit flow curves and manual speed, obstacle, foam and mask zones"
+        )
         self.ui.settings.clicked.connect(self.flow_direction_controller.toggle)
         self.scene.selectionChanged.connect(
             self.flow_direction_controller.refresh_for_selection

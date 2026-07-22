@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -50,7 +51,7 @@ class FlowEstimator(Protocol):
         image: np.ndarray,
         mask: np.ndarray,
         direction: tuple[float, float] | None = None,
-        guides: list[dict[str, list[float]]] | None = None,
+        guides: list[dict[str, Any]] | None = None,
     ) -> np.ndarray: ...
 
 
@@ -86,6 +87,90 @@ class MorphologyMaskRefiner:
         return np.asarray(result, dtype=np.float32) / 255.0
 
 
+def _pipeline_array(value: Any, size: tuple[int, int]) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    elif hasattr(value, "cpu") and hasattr(value, "numpy"):
+        value = value.cpu().numpy()
+    array = np.asarray(value)
+    array = np.squeeze(array)
+    if array.ndim != 2:
+        raise ValueError(f"AI map has unsupported shape: {array.shape}")
+    if array.shape != (size[1], size[0]):
+        array = np.asarray(
+            Image.fromarray(array.astype(np.float32), mode="F").resize(
+                size, Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
+        )
+    return np.asarray(array, dtype=np.float32)
+
+
+@dataclass(slots=True)
+class TransformersMaskRefiner:
+    """Optional SAM proposal provider, loaded only when AI preparation is enabled."""
+
+    model: str = "facebook/sam-vit-base"
+    device: int = -1
+    feather_radius: float = 2.0
+    name: str = "sam-mask-proposal"
+    _pipeline: Any = field(default=None, init=False, repr=False)
+
+    def _load(self):
+        if self._pipeline is None:
+            try:
+                from transformers import pipeline
+            except (ImportError, OSError) as error:
+                raise RuntimeError(
+                    "AI preparation requires PyTorch and Transformers. "
+                    "Install the optional packages described in "
+                    "effect_engine/README.md."
+                ) from error
+
+            try:
+                self._pipeline = pipeline(
+                    task="mask-generation",
+                    model=self.model,
+                    device=self.device,
+                )
+            except (ImportError, OSError) as error:
+                raise RuntimeError(
+                    f"Could not load mask model {self.model!r}: {error}"
+                ) from error
+        return self._pipeline
+
+    def refine(self, image: np.ndarray, rough_mask: np.ndarray) -> np.ndarray:
+        output = self._load()(Image.fromarray(image, mode="RGB"))
+        candidates = output.get("masks", []) if isinstance(output, Mapping) else []
+        rough_binary = rough_mask >= 0.35
+        best_mask = None
+        best_score = 0.0
+        for candidate in candidates:
+            try:
+                proposed = _pipeline_array(
+                    candidate, (image.shape[1], image.shape[0])
+                ) > 0.5
+            except (TypeError, ValueError):
+                continue
+            intersection = float(np.logical_and(proposed, rough_binary).sum())
+            union = float(np.logical_or(proposed, rough_binary).sum())
+            score = intersection / max(1.0, union)
+            if score > best_score:
+                best_score, best_mask = score, proposed
+        if best_mask is None or best_score < 0.03:
+            return MorphologyMaskRefiner().refine(image, rough_mask)
+
+        corridor = Image.fromarray(
+            np.where(rough_binary, 255, 0).astype(np.uint8), mode="L"
+        ).filter(ImageFilter.MaxFilter(31))
+        corridor_array = np.asarray(corridor, dtype=np.float32) / 255.0
+        refined = best_mask.astype(np.float32) * corridor_array
+        refined_image = Image.fromarray(
+            np.rint(refined * 255.0).astype(np.uint8), mode="L"
+        ).filter(ImageFilter.GaussianBlur(radius=self.feather_radius))
+        return np.asarray(refined_image, dtype=np.float32) / 255.0
+
+
 @dataclass(slots=True)
 class FlatDepthEstimator:
     value: float = 0.5
@@ -117,6 +202,56 @@ class ImageAwareDepthEstimator:
 
 
 @dataclass(slots=True)
+class TransformersDepthEstimator:
+    """Optional monocular depth proposal compatible with Depth Anything models."""
+
+    model: str = "LiheYoung/depth-anything-small-hf"
+    device: int = -1
+    name: str = "depth-anything-proposal"
+    _pipeline: Any = field(default=None, init=False, repr=False)
+
+    def _load(self):
+        if self._pipeline is None:
+            try:
+                from transformers import pipeline
+            except (ImportError, OSError) as error:
+                raise RuntimeError(
+                    "AI preparation requires PyTorch and Transformers. "
+                    "Install the optional packages described in "
+                    "effect_engine/README.md."
+                ) from error
+
+            try:
+                self._pipeline = pipeline(
+                    task="depth-estimation",
+                    model=self.model,
+                    device=self.device,
+                )
+            except (ImportError, OSError) as error:
+                raise RuntimeError(
+                    f"Could not load depth model {self.model!r}: {error}"
+                ) from error
+        return self._pipeline
+
+    def estimate(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        output = self._load()(Image.fromarray(image, mode="RGB"))
+        if not isinstance(output, Mapping):
+            raise ValueError("Depth pipeline returned no mapping")
+        raw = output.get("predicted_depth", output.get("depth"))
+        depth = _pipeline_array(raw, (image.shape[1], image.shape[0]))
+        selected = depth[mask > 0.1]
+        if selected.size:
+            low, high = np.percentile(selected, (2, 98))
+        else:
+            low, high = float(depth.min()), float(depth.max())
+        if high - low > 1e-6:
+            depth = (depth - low) / (high - low)
+        else:
+            depth = np.full_like(depth, 0.5)
+        return np.clip(depth, 0.0, 1.0).astype(np.float32)
+
+
+@dataclass(slots=True)
 class DirectionalFlowEstimator:
     variation: float = 0.28
     name: str = "directional-flow-v2"
@@ -140,7 +275,7 @@ class DirectionalFlowEstimator:
         image: np.ndarray,
         mask: np.ndarray,
         direction: tuple[float, float] | None = None,
-        guides: list[dict[str, list[float]]] | None = None,
+        guides: list[dict[str, Any]] | None = None,
     ) -> np.ndarray:
         dx, dy = direction or self._principal_direction(mask)
         length = float(np.hypot(dx, dy))
@@ -155,21 +290,59 @@ class DirectionalFlowEstimator:
         influence_radius = max(24.0, min(width, height) * 0.18)
         for guide in guides or []:
             try:
-                start_x, start_y = map(float, guide["start"][:2])
-                end_x, end_y = map(float, guide["end"][:2])
-            except (KeyError, TypeError, ValueError):
+                start = np.asarray(guide["start"][:2], dtype=np.float32)
+                end = np.asarray(guide["end"][:2], dtype=np.float32)
+                delta = end - start
+                control1 = np.asarray(
+                    guide.get("control1", start + delta / 3.0)[:2],
+                    dtype=np.float32,
+                )
+                control2 = np.asarray(
+                    guide.get("control2", start + delta * 2.0 / 3.0)[:2],
+                    dtype=np.float32,
+                )
+            except (KeyError, TypeError, ValueError, IndexError):
                 continue
-            guide_dx, guide_dy = end_x - start_x, end_y - start_y
-            guide_length = float(np.hypot(guide_dx, guide_dy))
-            if guide_length < 1e-6:
+            if not all(
+                np.isfinite(point).all()
+                for point in (start, control1, control2, end)
+            ):
                 continue
-            guide_dx, guide_dy = guide_dx / guide_length, guide_dy / guide_length
-            center_x = (start_x + end_x) * 0.5
-            center_y = (start_y + end_y) * 0.5
-            distance_sq = (x - center_x) ** 2 + (y - center_y) ** 2
+            if float(np.linalg.norm(end - start)) < 1e-6:
+                continue
+
+            nearest_distance = np.full(mask.shape, np.inf, dtype=np.float32)
+            nearest_dx = np.zeros(mask.shape, dtype=np.float32)
+            nearest_dy = np.zeros(mask.shape, dtype=np.float32)
+            for curve_t in np.linspace(0.0, 1.0, 12, dtype=np.float32):
+                inverse = np.float32(1.0) - curve_t
+                point = (
+                    inverse**3 * start
+                    + 3.0 * inverse**2 * curve_t * control1
+                    + 3.0 * inverse * curve_t**2 * control2
+                    + curve_t**3 * end
+                )
+                tangent = (
+                    3.0 * inverse**2 * (control1 - start)
+                    + 6.0 * inverse * curve_t * (control2 - control1)
+                    + 3.0 * curve_t**2 * (end - control2)
+                )
+                tangent_length = float(np.linalg.norm(tangent))
+                if tangent_length < 1e-6:
+                    continue
+                tangent /= tangent_length
+                distance_sq = (x - point[0]) ** 2 + (y - point[1]) ** 2
+                closer = distance_sq < nearest_distance
+                nearest_distance = np.where(
+                    closer, distance_sq, nearest_distance
+                )
+                nearest_dx = np.where(closer, tangent[0], nearest_dx)
+                nearest_dy = np.where(closer, tangent[1], nearest_dy)
+
+            distance_sq = nearest_distance
             weight = 1.0 / (1.0 + distance_sq / (influence_radius**2))
-            direction_x += weight * guide_dx
-            direction_y += weight * guide_dy
+            direction_x += weight * nearest_dx
+            direction_y += weight * nearest_dy
             total_weight += weight
         direction_x /= total_weight
         direction_y /= total_weight
@@ -210,10 +383,111 @@ class DirectionalFlowEstimator:
             )
         else:
             obstacle_factor = np.ones_like(mask, dtype=np.float32)
-        speed = np.clip((0.2 + mask * 0.8) * obstacle_factor, 0.0, 1.0)
+        # Keep headroom for the manual "faster" brush.  A fully selected
+        # interior starts around 0.7, so a 1.5x correction is visible instead
+        # of being immediately clipped at the map maximum.
+        speed = np.clip((0.12 + mask * 0.58) * obstacle_factor, 0.0, 1.0)
         speed[mask <= 0.01] = 0.0
         flow *= speed[..., None]
         return flow
+
+
+def _automatic_material_maps(
+    image: np.ndarray,
+    mask: np.ndarray,
+    speed: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Propose protected structure and foam without changing pixels outside mask."""
+    mask_image = Image.fromarray(
+        np.rint(mask * 255.0).astype(np.uint8), mode="L"
+    )
+    eroded = np.asarray(mask_image.filter(ImageFilter.MinFilter(7)), dtype=np.float32)
+    eroded /= 255.0
+    boundary = np.clip(mask - eroded, 0.0, 1.0)
+
+    gray = np.asarray(
+        Image.fromarray(image, mode="RGB")
+        .convert("L")
+        .filter(ImageFilter.GaussianBlur(radius=1.4)),
+        dtype=np.float32,
+    ) / 255.0
+    grad_y, grad_x = np.gradient(gray)
+    edges = np.hypot(grad_x, grad_y)
+    selected = edges[mask > 0.1]
+    edge_scale = float(np.percentile(selected, 92)) if selected.size else 0.0
+    if edge_scale > 1e-6:
+        edges = np.clip(edges / edge_scale, 0.0, 1.0)
+    else:
+        edges = np.zeros_like(mask, dtype=np.float32)
+
+    obstacles = np.clip(boundary * 0.9 + edges * mask * 0.18, 0.0, 1.0)
+    foam = np.clip(
+        (boundary * 0.18 + edges * mask * 0.28) * speed,
+        0.0,
+        1.0,
+    )
+    return obstacles.astype(np.float32), foam.astype(np.float32)
+
+
+def _apply_radial_zones(
+    base: np.ndarray,
+    zones: list[Mapping[str, Any]],
+    *,
+    multiply: bool,
+) -> np.ndarray:
+    result = np.asarray(base, dtype=np.float32).copy()
+    height, width = result.shape
+    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+    for zone in zones:
+        try:
+            center_x, center_y = map(float, zone["center"][:2])
+            radius = max(1.0, float(zone["radius"]))
+            value = float(zone.get("value", 1.0))
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        distance = np.hypot(x - center_x, y - center_y) / radius
+        influence = np.clip(1.0 - distance, 0.0, 1.0)
+        influence = influence * influence * (3.0 - 2.0 * influence)
+        if multiply:
+            result *= 1.0 + (value - 1.0) * influence
+        else:
+            result = np.maximum(result, np.clip(value, 0.0, 1.0) * influence)
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
+
+
+def _erase_radial_zones(
+    base: np.ndarray,
+    zones: list[Mapping[str, Any]],
+) -> np.ndarray:
+    keep = np.ones_like(base, dtype=np.float32)
+    erased = _apply_radial_zones(
+        np.zeros_like(base, dtype=np.float32),
+        zones,
+        multiply=False,
+    )
+    keep -= erased
+    return np.clip(base * keep, 0.0, 1.0).astype(np.float32)
+
+
+def _blend_radial_zones(
+    base: np.ndarray,
+    zones: list[Mapping[str, Any]],
+) -> np.ndarray:
+    result = np.asarray(base, dtype=np.float32).copy()
+    height, width = result.shape
+    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+    for zone in zones:
+        try:
+            center_x, center_y = map(float, zone["center"][:2])
+            radius = max(1.0, float(zone["radius"]))
+            value = np.clip(float(zone.get("value", 0.5)), 0.0, 1.0)
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        distance = np.hypot(x - center_x, y - center_y) / radius
+        influence = np.clip(1.0 - distance, 0.0, 1.0)
+        influence = influence * influence * (3.0 - 2.0 * influence)
+        result = result * (1.0 - influence) + value * influence
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
 @dataclass(slots=True)
@@ -301,18 +575,52 @@ class PreparationPipeline:
         effect_type: str,
         seed: int,
         direction: tuple[float, float] | None = None,
-        guides: list[dict[str, list[float]]] | None = None,
+        guides: list[dict[str, Any]] | None = None,
+        manual_overrides: Mapping[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EffectAssets:
         rgb = _rgb_array(image)
         size = rgb.shape[1], rgb.shape[0]
         rough = _mask_array(rough_mask, size)
         mask = self.mask_refiner.refine(rgb, rough)
+        overrides = manual_overrides or {}
+        mask = _apply_radial_zones(
+            mask,
+            list(overrides.get("mask_add_zones") or []),
+            multiply=False,
+        )
+        mask = _erase_radial_zones(
+            mask,
+            list(overrides.get("mask_remove_zones") or []),
+        )
         depth = self.depth_estimator.estimate(rgb, mask)
+        depth = _blend_radial_zones(
+            depth,
+            list(overrides.get("depth_zones") or []),
+        )
         flow_kwargs: dict[str, Any] = {"direction": direction}
         if guides:
             flow_kwargs["guides"] = guides
         flow = self.flow_estimator.estimate(rgb, mask, **flow_kwargs)
+        speed = np.clip(np.linalg.norm(flow, axis=-1), 0.0, 1.0)
+        obstacles, foam = _automatic_material_maps(rgb, mask, speed)
+        speed = _apply_radial_zones(
+            speed,
+            list(overrides.get("speed_zones") or []),
+            multiply=True,
+        )
+        obstacles = _apply_radial_zones(
+            obstacles,
+            list(overrides.get("obstacle_zones") or []),
+            multiply=False,
+        )
+        foam = _apply_radial_zones(
+            foam,
+            list(overrides.get("foam_zones") or []),
+            multiply=False,
+        )
+        speed *= np.clip(1.0 - obstacles, 0.0, 1.0)
+        speed *= mask
         style = self.style_analyzer.analyze(rgb, mask)
         textures = self.texture_generator.generate(rgb, mask, effect_type, int(seed), style)
 
@@ -323,13 +631,35 @@ class PreparationPipeline:
                 "flow": self.flow_estimator.name,
                 "textures": self.texture_generator.name,
                 "style": "statistics-v1",
-            }
+            },
+            "provider_models": {
+                key: str(model)
+                for key, provider in (
+                    ("mask", self.mask_refiner),
+                    ("depth", self.depth_estimator),
+                )
+                if (model := getattr(provider, "model", None))
+            },
         }
         preparation_metadata.update(metadata or {})
         if direction is not None:
             preparation_metadata["direction"] = [float(direction[0]), float(direction[1])]
         if guides:
             preparation_metadata["flow_guides"] = guides
+        preparation_metadata["asset_layers"] = {
+            "proposal": ["mask", "depth", "flow", "speed", "obstacles", "foam"],
+            "manual_overrides": {
+                key: len(list(overrides.get(key) or []))
+                for key in (
+                    "speed_zones",
+                    "obstacle_zones",
+                    "foam_zones",
+                    "mask_add_zones",
+                    "mask_remove_zones",
+                    "depth_zones",
+                )
+            },
+        }
 
         return EffectAssets(
             effect_type=effect_type,
@@ -337,7 +667,50 @@ class PreparationPipeline:
             mask=mask,
             depth=depth,
             flow=flow,
+            speed=speed,
+            obstacles=obstacles,
+            foam=foam,
             style=style,
             textures=textures,
             metadata=preparation_metadata,
         )
+
+
+_AI_PIPELINE_CACHE: dict[tuple[str, str, int], PreparationPipeline] = {}
+
+
+def create_preparation_pipeline(use_ai: bool | None = None) -> PreparationPipeline:
+    """Create optional AI proposal providers while preserving an offline fallback."""
+    if use_ai is None:
+        use_ai = os.environ.get("AI_EDITOR_AI_PREPARATION", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+    if not use_ai:
+        return PreparationPipeline()
+    try:
+        device = int(os.environ.get("AI_EDITOR_AI_DEVICE", "-1"))
+    except ValueError:
+        device = -1
+    mask_model = os.environ.get(
+        "AI_EDITOR_MASK_MODEL", "facebook/sam-vit-base"
+    )
+    depth_model = os.environ.get(
+        "AI_EDITOR_DEPTH_MODEL", "LiheYoung/depth-anything-small-hf"
+    )
+    cache_key = (mask_model, depth_model, device)
+    if cache_key in _AI_PIPELINE_CACHE:
+        return _AI_PIPELINE_CACHE[cache_key]
+    prepared = PreparationPipeline(
+        mask_refiner=TransformersMaskRefiner(
+            model=mask_model,
+            device=device,
+        ),
+        depth_estimator=TransformersDepthEstimator(
+            model=depth_model,
+            device=device,
+        ),
+    )
+    _AI_PIPELINE_CACHE[cache_key] = prepared
+    return prepared

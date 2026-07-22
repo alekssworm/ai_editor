@@ -13,6 +13,9 @@
     "opacity": 0.75,
     "advection": 0.2,
     "cross_flow": 0.7,
-    "shimmer": 0.08
+    "shimmer": 0.08,
+    "highlight": 0.2,
+    "foam_amount": 0.05,
+    "turbulence": 0.08
   }
 }

@@ -34,6 +34,7 @@ def import_image(self):
         self.shape_parents.clear()
         self.flow_directions.clear()
         self.flow_guides.clear()
+        self.effect_overrides.clear()
         self.shape_id_counter = 1
         self.ui.listWidget.clear()
         self.current_project_folder = None

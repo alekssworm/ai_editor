@@ -25,6 +25,9 @@ class EffectAssetStore:
             "mask": f"mask-{token}.png",
             "depth": f"depth-{token}.png",
             "flow": f"flow-{token}.npz",
+            "speed": f"speed-{token}.png",
+            "obstacles": f"obstacles-{token}.png",
+            "foam": f"foam-{token}.png",
         }
         new_paths = [target / filename for filename in files.values()]
         manifest_path = target / cls.MANIFEST_NAME
@@ -37,10 +40,18 @@ class EffectAssetStore:
 
         mask_u8 = np.rint(assets.mask * 255.0).astype(np.uint8)
         depth_u16 = np.rint(assets.depth * 65535.0).astype(np.uint16)
+        speed_u8 = np.rint(assets.speed * 255.0).astype(np.uint8)
+        obstacles_u8 = np.rint(assets.obstacles * 255.0).astype(np.uint8)
+        foam_u8 = np.rint(assets.foam * 255.0).astype(np.uint8)
         manifest_temp = target / f".{cls.MANIFEST_NAME}-{token}.tmp"
         try:
             Image.fromarray(mask_u8, mode="L").save(target / files["mask"])
             Image.fromarray(depth_u16).save(target / files["depth"])
+            Image.fromarray(speed_u8, mode="L").save(target / files["speed"])
+            Image.fromarray(obstacles_u8, mode="L").save(
+                target / files["obstacles"]
+            )
+            Image.fromarray(foam_u8, mode="L").save(target / files["foam"])
             np.savez_compressed(
                 target / files["flow"], flow=assets.flow.astype(np.float32)
             )
@@ -86,6 +97,15 @@ class EffectAssetStore:
         with np.load(source / files.get("flow", "flow.npz"), allow_pickle=False) as flow_file:
             flow = np.asarray(flow_file["flow"], dtype=np.float32)
 
+        def optional_map(name: str):
+            filename = files.get(name)
+            if not filename or not (source / filename).is_file():
+                return None
+            return (
+                np.asarray(Image.open(source / filename).convert("L"), dtype=np.float32)
+                / 255.0
+            )
+
         return EffectAssets(
             version=int(data.get("version", 1)),
             effect_type=data["effect_type"],
@@ -93,6 +113,9 @@ class EffectAssetStore:
             mask=mask,
             depth=depth,
             flow=flow,
+            speed=optional_map("speed"),
+            obstacles=optional_map("obstacles"),
+            foam=optional_map("foam"),
             style=StyleProfile.from_dict(data.get("style")),
             textures={str(key): str(value) for key, value in (data.get("textures") or {}).items()},
             metadata=dict(data.get("metadata") or {}),

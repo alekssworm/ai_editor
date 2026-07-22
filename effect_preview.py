@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QComboBox,
     QVBoxLayout,
 )
 
@@ -51,6 +52,9 @@ class EffectPreviewDialog(QDialog):
         self.resize(760, 560)
 
         self._frames = [_to_qimage(frame) for frame in result.frames]
+        self._debug_maps = {
+            name: _to_qimage(image) for name, image in result.debug_maps.items()
+        }
         self._frame_index = 0
         self._playing = True
         self._export_callback = export_callback
@@ -70,6 +74,13 @@ class EffectPreviewDialog(QDialog):
 
         self.play_button = QPushButton("Pause")
         self.play_button.clicked.connect(self._toggle_playback)
+        self.map_selector = QComboBox()
+        self.map_selector.addItem("Effect")
+        self.map_selector.addItems(list(self._debug_maps))
+        self.map_selector.setToolTip(
+            "Inspect prepared maps before deterministic rendering"
+        )
+        self.map_selector.currentTextChanged.connect(self._show_current_frame)
         self.export_button = QPushButton("Export MP4 (24 fps)")
         self.export_button.setToolTip(
             "Full-resolution deterministic export: 72 frames, H.264 CRF 18"
@@ -81,6 +92,7 @@ class EffectPreviewDialog(QDialog):
 
         controls = QHBoxLayout()
         controls.addWidget(self.status_label)
+        controls.addWidget(self.map_selector)
         controls.addStretch(1)
         controls.addWidget(self.export_button)
         controls.addWidget(self.play_button)
@@ -97,9 +109,16 @@ class EffectPreviewDialog(QDialog):
         self._show_current_frame()
 
     def _show_current_frame(self) -> None:
-        if not self._frames:
+        selected_map = self.map_selector.currentText()
+        if selected_map != "Effect" and selected_map in self._debug_maps:
+            image = self._debug_maps[selected_map]
+            self.play_button.setEnabled(False)
+        elif self._frames:
+            image = self._frames[self._frame_index]
+            self.play_button.setEnabled(True)
+        else:
             return
-        pixmap = QPixmap.fromImage(self._frames[self._frame_index])
+        pixmap = QPixmap.fromImage(image)
         self.preview_label.setPixmap(
             pixmap.scaled(
                 self.preview_label.size(),
@@ -232,6 +251,10 @@ def start_effect_preview(window) -> None:
                 card_override = card
                 break
     direction_override = getattr(window, "flow_directions", {}).get(shape_id)
+    use_ai_preparation = bool(
+        getattr(window, "ai_prepare_checkbox", None)
+        and window.ai_prepare_checkbox.isChecked()
+    )
 
     def restore_button() -> None:
         window._effect_preview_running = False
@@ -257,6 +280,8 @@ def start_effect_preview(window) -> None:
                 fps=24,
                 crf=18,
                 seed=shape_id,
+                use_ai_preparation=use_ai_preparation,
+                prepared_assets_dir=result.assets_dir,
             )
 
         default_export_path = Path(project_path).with_name(
@@ -296,4 +321,5 @@ def start_effect_preview(window) -> None:
         fps=12,
         max_dimension=640,
         seed=shape_id,
+        use_ai_preparation=use_ai_preparation,
     )

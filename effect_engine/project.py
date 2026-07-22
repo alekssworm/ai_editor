@@ -10,11 +10,11 @@ from PIL import Image, ImageDraw
 from .parameters import renderer_params_from_card
 from .preset_registry import resolve_card_preset
 from .models import EffectAssets
-from .preparation import PreparationPipeline
+from .preparation import PreparationPipeline, create_preparation_pipeline
 from .storage import EffectAssetStore
 
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 3
 
 
 def normalize_direction(value: Any) -> tuple[float, float] | None:
@@ -77,33 +77,53 @@ def project_flow_direction(
     return None
 
 
+def _normalize_point(raw: Any) -> list[float] | None:
+    if isinstance(raw, Mapping):
+        raw = (raw.get("x"), raw.get("y"))
+    if (
+        not isinstance(raw, Sequence)
+        or isinstance(raw, (str, bytes))
+        or len(raw) < 2
+    ):
+        return None
+    try:
+        x, y = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return [x, y]
+
+
 def normalize_flow_guide(value: Any) -> dict[str, list[float]] | None:
     if not isinstance(value, Mapping):
         return None
-    start = value.get("start")
-    end = value.get("end")
-
-    def point(raw):
-        if isinstance(raw, Mapping):
-            raw = (raw.get("x"), raw.get("y"))
-        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)) or len(raw) < 2:
-            return None
-        try:
-            x, y = float(raw[0]), float(raw[1])
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(x) or not math.isfinite(y):
-            return None
-        return [x, y]
-
-    start_point, end_point = point(start), point(end)
+    start_point = _normalize_point(value.get("start"))
+    end_point = _normalize_point(value.get("end"))
     if start_point is None or end_point is None:
         return None
     if math.hypot(
         end_point[0] - start_point[0], end_point[1] - start_point[1]
     ) < 1e-6:
         return None
-    return {"start": start_point, "end": end_point}
+    delta = [
+        end_point[0] - start_point[0],
+        end_point[1] - start_point[1],
+    ]
+    control1 = _normalize_point(value.get("control1")) or [
+        start_point[0] + delta[0] / 3.0,
+        start_point[1] + delta[1] / 3.0,
+    ]
+    control2 = _normalize_point(value.get("control2")) or [
+        start_point[0] + delta[0] * 2.0 / 3.0,
+        start_point[1] + delta[1] * 2.0 / 3.0,
+    ]
+    return {
+        "start": start_point,
+        "control1": control1,
+        "control2": control2,
+        "end": end_point,
+    }
 
 
 def project_flow_guides(
@@ -143,6 +163,78 @@ def serialize_flow_guides(
         normalized = [
             guide for raw in raw_guides if (guide := normalize_flow_guide(raw))
         ]
+        if normalized:
+            result[str(shape_id)] = normalized
+    return result
+
+
+_ZONE_KEYS = (
+    "speed_zones",
+    "obstacle_zones",
+    "foam_zones",
+    "mask_add_zones",
+    "mask_remove_zones",
+    "depth_zones",
+)
+
+
+def normalize_effect_zone(value: Any, *, speed: bool = False) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    center = _normalize_point(value.get("center"))
+    try:
+        radius = float(value.get("radius"))
+        default_value = 1.0
+        amount = float(value.get("value", default_value))
+    except (TypeError, ValueError):
+        return None
+    if center is None or not math.isfinite(radius) or radius < 1.0:
+        return None
+    if not math.isfinite(amount):
+        return None
+    if speed:
+        amount = min(2.0, max(0.05, amount))
+    else:
+        amount = min(1.0, max(0.0, amount))
+    return {"center": center, "radius": radius, "value": amount}
+
+
+def project_effect_overrides(
+    project: Mapping[str, Any], shape_id: int
+) -> dict[str, list[dict[str, Any]]]:
+    collection = project.get("effect_overrides") or {}
+    if not isinstance(collection, Mapping):
+        return {}
+    raw = collection.get(str(int(shape_id)), collection.get(int(shape_id), {}))
+    if not isinstance(raw, Mapping):
+        return {}
+    result = {}
+    for key in _ZONE_KEYS:
+        values = raw.get(key) or []
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        normalized = [
+            zone
+            for item in values
+            if (zone := normalize_effect_zone(item, speed=key == "speed_zones"))
+        ]
+        if normalized:
+            result[key] = normalized
+    return result
+
+
+def serialize_effect_overrides(
+    overrides: Mapping[Any, Any], shape_ids: Iterable[int]
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    result = {}
+    for raw_shape_id in shape_ids:
+        shape_id = int(raw_shape_id)
+        raw = overrides.get(shape_id, overrides.get(str(shape_id), {}))
+        if not isinstance(raw, Mapping):
+            continue
+        normalized = project_effect_overrides(
+            {"effect_overrides": {str(shape_id): raw}}, shape_id
+        )
         if normalized:
             result[str(shape_id)] = normalized
     return result
@@ -255,8 +347,9 @@ def prepare_project_shape(
     if resolved_direction is None:
         resolved_direction = project_flow_direction(project, requested_id)
     guides = project_flow_guides(project, requested_id)
+    manual_overrides = project_effect_overrides(project, requested_id)
 
-    preparer = pipeline or PreparationPipeline()
+    preparer = pipeline or create_preparation_pipeline()
     assets = preparer.prepare(
         image,
         rough_mask,
@@ -264,6 +357,7 @@ def prepare_project_shape(
         seed=int(seed),
         direction=resolved_direction,
         guides=guides or None,
+        manual_overrides=manual_overrides or None,
         metadata={
             "project": path.name,
             "shape_id": requested_id,

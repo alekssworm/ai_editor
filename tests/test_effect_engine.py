@@ -10,16 +10,23 @@ import numpy as np
 from PIL import Image
 
 from effect_engine.cli import resolve_render_params
-from effect_engine.models import EffectAssets
-from effect_engine.preparation import PreparationPipeline
+from effect_engine.models import ASSET_VERSION, EffectAssets
+from effect_engine.preparation import (
+    PreparationPipeline,
+    TransformersDepthEstimator,
+    TransformersMaskRefiner,
+    create_preparation_pipeline,
+)
 from effect_engine.preview import build_project_preview, renderer_params_from_card
 from effect_engine.preset_registry import PresetRegistry, default_preset_registry
 from effect_engine.project import (
     load_project,
     normalize_direction,
     prepare_project_shape,
+    project_effect_overrides,
     project_flow_direction,
     project_flow_guides,
+    serialize_effect_overrides,
     serialize_flow_directions,
     serialize_flow_guides,
 )
@@ -68,7 +75,57 @@ class EffectEngineTests(unittest.TestCase):
         self.assertGreater(len(restored.style.palette), 0)
         np.testing.assert_allclose(restored.mask, assets.mask, atol=1.0 / 255.0)
         np.testing.assert_allclose(restored.depth, assets.depth, atol=1.0 / 65535.0)
-        np.testing.assert_array_equal(restored.flow, assets.flow)
+        np.testing.assert_allclose(restored.flow, assets.flow, atol=1e-6)
+        np.testing.assert_allclose(restored.speed, assets.speed, atol=1.0 / 255.0)
+        np.testing.assert_allclose(
+            restored.obstacles, assets.obstacles, atol=1.0 / 255.0
+        )
+        np.testing.assert_allclose(restored.foam, assets.foam, atol=1.0 / 255.0)
+
+    def test_optional_ai_providers_return_editable_map_proposals(self) -> None:
+        rough = np.zeros(self.mask.shape, dtype=np.float32)
+        rough[8:28, 10:38] = 1.0
+        candidate = np.zeros(self.mask.shape, dtype=np.uint8)
+        candidate[9:27, 11:37] = 1
+        mask_provider = TransformersMaskRefiner(feather_radius=0)
+        mask_provider._pipeline = lambda _image: {"masks": [candidate]}
+        refined = mask_provider.refine(np.asarray(self.image), rough)
+
+        depth_provider = TransformersDepthEstimator()
+        depth_provider._pipeline = lambda _image: {
+            "depth": np.tile(
+                np.linspace(0.0, 1.0, self.image.width, dtype=np.float32),
+                (self.image.height, 1),
+            )
+        }
+        depth = depth_provider.estimate(np.asarray(self.image), refined)
+
+        self.assertGreater(float(refined[15, 20]), 0.9)
+        self.assertEqual(float(refined[0, 0]), 0.0)
+        self.assertAlmostEqual(float(depth.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(depth.max()), 1.0, places=5)
+        self.assertEqual(
+            create_preparation_pipeline(use_ai=False).mask_refiner.name,
+            "morphology-v1",
+        )
+
+    def test_version_one_flow_magnitude_migrates_to_speed_map(self) -> None:
+        flow = np.zeros((*self.mask.shape, 2), dtype=np.float32)
+        flow[..., 0] = 0.4
+        assets = EffectAssets(
+            version=1,
+            effect_type="water",
+            seed=1,
+            mask=self.mask,
+            depth=self.mask,
+            flow=flow,
+        )
+
+        self.assertEqual(assets.version, ASSET_VERSION)
+        self.assertAlmostEqual(float(assets.speed.max()), 0.4, places=6)
+        self.assertAlmostEqual(float(assets.flow[..., 0].max()), 1.0, places=6)
+        self.assertEqual(float(assets.obstacles.max()), 0.0)
+        self.assertEqual(float(assets.foam.max()), 0.0)
 
     def test_effect_asset_manifest_switch_is_atomic_and_cleans_old_files(self) -> None:
         assets = self.prepare()
@@ -97,6 +154,10 @@ class EffectEngineTests(unittest.TestCase):
         np.testing.assert_array_equal(at_zero, at_one)
         np.testing.assert_array_equal(at_zero, repeated)
         self.assertFalse(np.array_equal(at_zero, other_phase))
+        original = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            at_zero[assets.mask <= 0.01], original[assets.mask <= 0.01]
+        )
 
         other_seed = self.prepare(seed=124)
         seeded_output = np.asarray(engine.render_frame(self.image, other_seed, 0.0))
@@ -199,6 +260,114 @@ class EffectEngineTests(unittest.TestCase):
         self.assertGreater(float(direction[18, 12, 1]), 0.2)
         self.assertLess(float(direction[18, 36, 1]), -0.2)
         self.assertEqual(assets.metadata["flow_guides"], serialized["4"])
+
+    def test_cubic_flow_curve_changes_direction_along_its_path(self) -> None:
+        full_mask = np.ones(self.mask.shape, dtype=np.float32)
+        assets = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=4,
+            direction=(1.0, 0.0),
+            guides=[
+                {
+                    "start": [6, 6],
+                    "control1": [6, 29],
+                    "control2": [40, 29],
+                    "end": [40, 6],
+                }
+            ],
+        )
+
+        self.assertGreater(float(assets.flow[10, 7, 1]), 0.2)
+        self.assertLess(float(assets.flow[10, 39, 1]), -0.2)
+
+    def test_manual_map_zones_are_separate_from_ai_proposals(self) -> None:
+        full_mask = np.ones(self.mask.shape, dtype=np.float32)
+        overrides = {
+            "speed_zones": [
+                {"center": [12, 18], "radius": 8, "value": 0.2},
+                {"center": [36, 18], "radius": 8, "value": 1.5},
+            ],
+            "obstacle_zones": [
+                {"center": [24, 18], "radius": 7, "value": 1.0}
+            ],
+            "foam_zones": [
+                {"center": [36, 18], "radius": 7, "value": 1.0}
+            ],
+            "depth_zones": [
+                {"center": [6, 18], "radius": 5, "value": 0.9}
+            ],
+        }
+        baseline = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=5,
+            direction=(1.0, 0.0),
+        )
+        assets = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=5,
+            direction=(1.0, 0.0),
+            manual_overrides=overrides,
+        )
+
+        self.assertLess(float(assets.speed[18, 12]), 0.3)
+        self.assertGreater(
+            float(assets.speed[18, 36]),
+            float(baseline.speed[18, 36]) * 1.2,
+        )
+        self.assertGreater(float(assets.obstacles[18, 24]), 0.95)
+        self.assertLess(float(assets.speed[18, 24]), 0.05)
+        self.assertGreater(float(assets.foam[18, 36]), 0.95)
+        self.assertGreater(float(assets.depth[18, 6]), 0.85)
+        self.assertEqual(
+            assets.metadata["asset_layers"]["manual_overrides"]["foam_zones"],
+            1,
+        )
+
+    def test_manual_mask_zones_override_the_ai_mask_proposal(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=6,
+            direction=(1.0, 0.0),
+            manual_overrides={
+                "mask_add_zones": [
+                    {"center": [2, 2], "radius": 4, "value": 1.0}
+                ],
+                "mask_remove_zones": [
+                    {"center": [20, 16], "radius": 4, "value": 1.0}
+                ],
+            },
+        )
+
+        self.assertGreater(float(assets.mask[2, 2]), 0.95)
+        self.assertLess(float(assets.mask[16, 20]), 0.05)
+
+    def test_effect_override_zones_round_trip(self) -> None:
+        serialized = serialize_effect_overrides(
+            {
+                9: {
+                    "speed_zones": [
+                        {"center": [5, 6], "radius": 12, "value": 1.5}
+                    ],
+                    "obstacle_zones": [
+                        {"center": [8, 9], "radius": 4, "value": 1}
+                    ],
+                }
+            },
+            {9},
+        )
+
+        restored = project_effect_overrides(
+            {"effect_overrides": serialized}, 9
+        )
+        self.assertEqual(restored, serialized["9"])
 
     def test_water_card_settings_are_mapped_to_renderer_params(self) -> None:
         card = {

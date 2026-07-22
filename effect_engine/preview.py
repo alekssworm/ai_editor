@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,8 +10,10 @@ from PIL import Image
 from .models import EffectAssets
 from .parameters import renderer_params_from_card
 from .preset_registry import resolve_card_preset
+from .preparation import create_preparation_pipeline
 from .project import find_shape_card, load_project, prepare_project_shape, resolve_background_path
 from .renderer import DeterministicEffectEngine
+from .storage import EffectAssetStore
 
 
 @dataclass(slots=True)
@@ -23,6 +25,50 @@ class PreviewResult:
     fps: int
     params: dict[str, float]
     preset_id: str | None = None
+    debug_maps: dict[str, Image.Image] = field(default_factory=dict)
+
+
+def effect_asset_debug_maps(assets: EffectAssets) -> dict[str, Image.Image]:
+    flow = np.asarray(assets.flow, dtype=np.float32)
+    selection = np.asarray(assets.mask, dtype=np.float32)
+    flow_rgb = np.stack(
+        (
+            np.clip(flow[..., 0] * 0.5 + 0.5, 0.0, 1.0),
+            np.clip(flow[..., 1] * 0.5 + 0.5, 0.0, 1.0),
+            np.asarray(assets.speed, dtype=np.float32),
+        ),
+        axis=-1,
+    ) * selection[..., None]
+    speed = np.asarray(assets.speed, dtype=np.float32)
+    speed_rgb = np.stack(
+        (speed, np.sqrt(speed) * 0.75, 1.0 - speed), axis=-1
+    ) * selection[..., None]
+    obstacle = np.asarray(assets.obstacles, dtype=np.float32)
+    obstacle_rgb = np.stack(
+        (obstacle, obstacle * 0.12, obstacle * 0.08), axis=-1
+    )
+    foam = np.asarray(assets.foam, dtype=np.float32)
+
+    def gray(value: np.ndarray) -> Image.Image:
+        return Image.fromarray(
+            np.rint(np.clip(value, 0.0, 1.0) * 255.0).astype(np.uint8),
+            mode="L",
+        ).convert("RGB")
+
+    def rgb(value: np.ndarray) -> Image.Image:
+        return Image.fromarray(
+            np.rint(np.clip(value, 0.0, 1.0) * 255.0).astype(np.uint8),
+            mode="RGB",
+        )
+
+    return {
+        "Mask": gray(assets.mask),
+        "Depth": gray(assets.depth),
+        "Flow": rgb(flow_rgb),
+        "Speed": rgb(speed_rgb),
+        "Obstacles": rgb(obstacle_rgb),
+        "Foam": gray(foam),
+    }
 
 
 def fit_size(size: tuple[int, int], max_dimension: int) -> tuple[int, int]:
@@ -56,6 +102,15 @@ def resize_effect_assets(assets: EffectAssets, size: tuple[int, int]) -> EffectA
         )
         for channel in range(2)
     ]
+    dense_maps = {
+        name: np.asarray(
+            Image.fromarray(getattr(assets, name), mode="F").resize(
+                (width, height), Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
+        )
+        for name in ("speed", "obstacles", "foam")
+    }
     metadata = dict(assets.metadata)
     metadata["preview_source_size"] = {"width": assets.width, "height": assets.height}
     return EffectAssets(
@@ -64,6 +119,9 @@ def resize_effect_assets(assets: EffectAssets, size: tuple[int, int]) -> EffectA
         mask=np.asarray(mask_image, dtype=np.float32),
         depth=np.asarray(depth_image, dtype=np.float32),
         flow=np.stack(flow_channels, axis=-1),
+        speed=dense_maps["speed"],
+        obstacles=dense_maps["obstacles"],
+        foam=dense_maps["foam"],
         style=assets.style,
         textures=dict(assets.textures),
         metadata=metadata,
@@ -81,6 +139,7 @@ def build_project_preview(
     fps: int = 12,
     max_dimension: int = 640,
     seed: int = 1,
+    use_ai_preparation: bool | None = None,
 ) -> PreviewResult:
     """Prepare full-size assets, then render a lightweight deterministic preview."""
     if fps <= 0:
@@ -105,6 +164,7 @@ def build_project_preview(
         card_override=card,
         seed=seed,
         direction=direction_override,
+        pipeline=create_preparation_pipeline(use_ai_preparation),
     )
     background_path = resolve_background_path(path, project)
     with Image.open(background_path) as source:
@@ -136,6 +196,7 @@ def build_project_preview(
         fps=int(fps),
         params=params,
         preset_id=preset.preset_id if preset is not None else None,
+        debug_maps=effect_asset_debug_maps(preview_assets),
     )
 
 
@@ -150,6 +211,8 @@ def export_project_loop(
     fps: int = 24,
     crf: int = 18,
     seed: int = 1,
+    use_ai_preparation: bool | None = None,
+    prepared_assets_dir: str | Path | None = None,
 ) -> Path:
     """Render a full-resolution deterministic loop directly to an H.264 file."""
     path, project = load_project(project_path)
@@ -162,15 +225,21 @@ def export_project_loop(
     if effect_type != "water":
         raise ValueError("Deterministic export currently supports only the water tool")
     preset = resolve_card_preset(card, effect_type)
-    assets, _ = prepare_project_shape(
-        path,
-        shape_id,
-        effect_type=effect_type,
-        preset_id=preset.preset_id if preset is not None else None,
-        card_override=card,
-        seed=seed,
-        direction=direction_override,
-    )
+    if prepared_assets_dir is not None:
+        assets = EffectAssetStore.load(prepared_assets_dir)
+        if assets.effect_type != effect_type:
+            raise ValueError("Prepared assets do not match the selected effect")
+    else:
+        assets, _ = prepare_project_shape(
+            path,
+            shape_id,
+            effect_type=effect_type,
+            preset_id=preset.preset_id if preset is not None else None,
+            card_override=card,
+            seed=seed,
+            direction=direction_override,
+            pipeline=create_preparation_pipeline(use_ai_preparation),
+        )
     background_path = resolve_background_path(path, project)
     with Image.open(background_path) as source:
         image = source.convert("RGB")
