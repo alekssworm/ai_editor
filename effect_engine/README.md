@@ -9,6 +9,28 @@ The pipeline deliberately separates the potentially non-deterministic preparatio
 
 The default preparation providers are lightweight deterministic fallbacks. SAM/Depth Anything or a texture-generation service can later implement the same provider protocols without changing the renderer.
 
+Each rendered frame now receives one immutable `EffectContext` containing the
+normalized loop time, seed, prepared maps and resolved numeric parameters.
+Effects are assembled from ordered layers instead of one large render method.
+Water currently uses `waves`, `deformation`, `highlights` and `foam`; rain uses
+`streaks` and `mist`.
+
+`EffectCompositor` applies multiple prepared effects to the same image in a
+stable order. The engine exposes it through `render_composite_frame` and
+`render_composite_frames`:
+
+```python
+from effect_engine import EffectApplication, DeterministicEffectEngine
+
+applications = [
+    EffectApplication(water_assets, {"strength": 4.0}),
+    EffectApplication(rain_assets, {"density": 0.6}),
+]
+frame = DeterministicEffectEngine().render_composite_frame(
+    image, applications, t=0.25
+)
+```
+
 Prepare a water layer from the current `shapes.json` format:
 
 ```powershell
@@ -55,8 +77,21 @@ inside the preview window for a full-resolution 72-frame H.264 loop. The export
 streams frames to an atomic temporary file at CRF 18 instead of keeping the
 whole video in memory.
 
-The current deterministic renderer supports the water tool. Fire, weather and
-light cards produce a clear error until their renderers are implemented.
+The deterministic renderer supports Water and Weather → Rain. Fire, fog, wind,
+smoke and light cards remain disabled until their renderers are implemented.
+
+### Parameter schemas
+
+AI Panel controls are generated from JSON files under `effect_engine/schemas`.
+Each definition provides a stable parameter id, label, value type, default,
+limits, step and optional suffix/options. Preset `controls` arrays choose which
+schema fields are shown. Adding a parameter or a rain/water preset therefore no
+longer requires editing the panel's Python layout code. Older qualitative water
+values such as `weak`, `default` and `strong` remain compatible.
+
+Rain is the second plugin and validates the shared architecture: its preset is
+stored under `effect_engine/presets/rain`, its controls are numeric and generated
+from `schemas/rain.json`, and its streak/mist layers are periodic at `t=1`.
 
 ### Flow direction
 

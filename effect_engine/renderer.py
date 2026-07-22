@@ -9,7 +9,9 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
 
+from .compositor import EffectApplication, EffectCompositor
 from .effects.base import EffectRenderer
+from .effects.rain import RainEffect
 from .effects.water import WaterFlowEffect
 from .models import EffectAssets
 
@@ -18,6 +20,8 @@ class DeterministicEffectEngine:
     def __init__(self) -> None:
         self._effects: dict[str, EffectRenderer] = {}
         self.register(WaterFlowEffect())
+        self.register(RainEffect())
+        self._compositor = EffectCompositor(self._effects)
 
     def register(self, effect: EffectRenderer) -> None:
         self._effects[effect.effect_type.lower()] = effect
@@ -29,11 +33,36 @@ class DeterministicEffectEngine:
         t: float,
         params: Mapping[str, float] | None = None,
     ) -> Image.Image:
-        try:
-            renderer = self._effects[assets.effect_type]
-        except KeyError as error:
-            raise ValueError(f"No renderer registered for effect '{assets.effect_type}'") from error
-        return renderer.render(image, assets, t, params=params)
+        return self._compositor.compose(
+            image,
+            (EffectApplication(assets=assets, params=params or {}),),
+            t,
+        )
+
+    def render_composite_frame(
+        self,
+        image: Image.Image | np.ndarray,
+        applications: list[EffectApplication] | tuple[EffectApplication, ...],
+        t: float,
+    ) -> Image.Image:
+        return self._compositor.compose(image, applications, t)
+
+    def render_composite_frames(
+        self,
+        image: Image.Image | np.ndarray,
+        applications: list[EffectApplication] | tuple[EffectApplication, ...],
+        frame_count: int,
+    ) -> list[Image.Image]:
+        if frame_count < 2:
+            raise ValueError("frame_count must be at least 2")
+        return [
+            self.render_composite_frame(
+                image,
+                applications,
+                frame_index / frame_count,
+            )
+            for frame_index in range(frame_count)
+        ]
 
     def render_frames(
         self,
@@ -60,6 +89,25 @@ class DeterministicEffectEngine:
         fps: int = 24,
         crf: int = 18,
         params: Mapping[str, float] | None = None,
+    ) -> Path:
+        return self.export_composite_mp4(
+            image,
+            (EffectApplication(assets=assets, params=params or {}),),
+            output_path,
+            frame_count=frame_count,
+            fps=fps,
+            crf=crf,
+        )
+
+    def export_composite_mp4(
+        self,
+        image: Image.Image | np.ndarray,
+        applications: list[EffectApplication] | tuple[EffectApplication, ...],
+        output_path: str | Path,
+        *,
+        frame_count: int = 72,
+        fps: int = 24,
+        crf: int = 18,
     ) -> Path:
         if fps <= 0:
             raise ValueError("fps must be positive")
@@ -93,11 +141,10 @@ class DeterministicEffectEngine:
                 ],
             )
             for frame_index in range(int(frame_count)):
-                frame = self.render_frame(
+                frame = self.render_composite_frame(
                     image,
-                    assets,
+                    applications,
                     frame_index / int(frame_count),
-                    params=params,
                 )
                 writer.append_data(np.asarray(frame.convert("RGB"), dtype=np.uint8))
             writer.close()

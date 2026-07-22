@@ -152,8 +152,6 @@ def build_project_preview(
         else find_shape_card(project, int(shape_id))
     )
     effect_type = str(card.get("tool_type") or "water").strip().lower()
-    if effect_type != "water":
-        raise ValueError("Deterministic preview currently supports only the water tool")
     preset = resolve_card_preset(card, effect_type)
 
     assets, assets_dir = prepare_project_shape(
@@ -176,12 +174,19 @@ def build_project_preview(
         image = image.resize(preview_size, Image.Resampling.LANCZOS)
     preview_assets = resize_effect_assets(assets, preview_size)
     params = renderer_params_from_card(card)
-    if preview_size != source_size and "strength" in params:
+    if preview_size != source_size:
         scale = min(
             preview_size[0] / source_size[0],
             preview_size[1] / source_size[1],
         )
-        params["strength"] = float(params["strength"]) * scale
+        for name in (
+            "strength",
+            "wavelength",
+            "secondary_wavelength",
+            "drop_length",
+        ):
+            if name in params:
+                params[name] = float(params[name]) * scale
     frames = DeterministicEffectEngine().render_frames(
         image,
         preview_assets,
@@ -222,8 +227,6 @@ def export_project_loop(
         else find_shape_card(project, int(shape_id))
     )
     effect_type = str(card.get("tool_type") or "water").strip().lower()
-    if effect_type != "water":
-        raise ValueError("Deterministic export currently supports only the water tool")
     preset = resolve_card_preset(card, effect_type)
     if prepared_assets_dir is not None:
         assets = EffectAssetStore.load(prepared_assets_dir)

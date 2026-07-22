@@ -1,6 +1,15 @@
 """Hybrid AI-preparation and deterministic animation engine."""
 
+from .compositor import EffectApplication, EffectCompositor
+from .context import EffectContext
+from .layers import EffectFrame, EffectLayer, LayeredEffect
 from .models import EffectAssets, StyleProfile
+from .parameter_schema import (
+    EffectParameterSchema,
+    ParameterDefinition,
+    ParameterSchemaRegistry,
+    default_parameter_schema_registry,
+)
 from .preparation import (
     PreparationPipeline,
     TransformersDepthEstimator,
@@ -12,6 +21,15 @@ from .renderer import DeterministicEffectEngine
 from .storage import EffectAssetStore
 
 __all__ = [
+    "EffectApplication",
+    "EffectCompositor",
+    "EffectContext",
+    "EffectFrame",
+    "EffectLayer",
+    "EffectParameterSchema",
+    "LayeredEffect",
+    "ParameterDefinition",
+    "ParameterSchemaRegistry",
     "DeterministicEffectEngine",
     "EffectAssets",
     "EffectAssetStore",
@@ -22,5 +40,6 @@ __all__ = [
     "TransformersDepthEstimator",
     "TransformersMaskRefiner",
     "create_preparation_pipeline",
+    "default_parameter_schema_registry",
     "default_preset_registry",
 ]

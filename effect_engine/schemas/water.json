@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "effect_type": "water",
+  "parameters": [
+    {"id": "intensity", "label": "Intensity", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "power", "label": "Power", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "grain", "label": "Grain", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "opacity", "label": "Opacity", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "randomness", "label": "Randomness", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "viscosity", "label": "Viscosity", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "transparency", "label": "Transparency", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]},
+    {"id": "reflections", "label": "Reflections", "type": "enum", "default": "default", "options": ["none", "weak", "default", "normal", "strong"]}
+  ]
+}

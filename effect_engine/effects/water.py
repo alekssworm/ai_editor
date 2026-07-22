@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import Mapping
 
 import numpy as np
-from PIL import Image
 
+from ..context import EffectContext
+from ..layers import EffectFrame, LayeredEffect
 from ..models import EffectAssets
 
 
@@ -100,28 +101,14 @@ def _water_highlight_color(assets: EffectAssets) -> np.ndarray:
     return (color.astype(np.float32) * 0.45 + 255.0 * 0.55).astype(np.float32)
 
 
-class WaterFlowEffect:
-    effect_type = "water"
+class WaterWavesLayer:
+    name = "waves"
 
-    def render(
-        self,
-        image: Image.Image | np.ndarray,
-        assets: EffectAssets,
-        t: float,
-        params: Mapping[str, float] | None = None,
-    ) -> Image.Image:
-        config = WaterFlowParams.from_mapping(params)
-        if isinstance(image, Image.Image):
-            rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
-        else:
-            rgb = np.asarray(image, dtype=np.float32)[..., :3]
-        if rgb.shape[:2] != assets.mask.shape:
-            raise ValueError(f"image shape {rgb.shape[:2]} does not match assets {assets.mask.shape}")
-
-        # Modulo makes t=1 exactly equal to t=0 instead of relying on sin(2*pi)
-        # floating-point rounding.
-        phase = np.float32(np.pi * 2.0 * (float(t) % 1.0) * config.cycles)
-        rng = np.random.default_rng(assets.seed)
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+        assets = context.assets
+        config = WaterFlowParams.from_mapping(context.params)
+        phase = np.float32(context.phase(config.cycles))
+        rng = context.rng("water-waves")
         phase_a, phase_b, phase_c = rng.uniform(
             0.0, np.pi * 2.0, size=3
         ).astype(np.float32)
@@ -169,11 +156,41 @@ class WaterFlowEffect:
             + phase_c
         )
 
+        frame.data["water"] = {
+            "config": config,
+            "x": x,
+            "y": y,
+            "along": along,
+            "flow_x": flow_x,
+            "flow_y": flow_y,
+            "flow_speed": flow_speed,
+            "mobility": mobility,
+            "style_scale": style_scale,
+            "phase": phase,
+            "phase_c": phase_c,
+            "wave_a": wave_a,
+            "wave_b": wave_b,
+            "wave_c": wave_c,
+        }
+
+
+class WaterDeformationLayer:
+    name = "deformation"
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+        data = frame.data["water"]
+        assets = context.assets
+        config = data["config"]
+        x, y = data["x"], data["y"]
+        flow_x, flow_y = data["flow_x"], data["flow_y"]
+        flow_speed, mobility = data["flow_speed"], data["mobility"]
+        wave_a, wave_b, wave_c = data["wave_a"], data["wave_b"], data["wave_c"]
+
         depth_scale = 0.65 + assets.depth * 0.7
         amplitude = (
             np.float32(config.strength)
             * depth_scale
-            * style_scale
+            * data["style_scale"]
             * flow_speed
             * mobility
         )
@@ -186,7 +203,7 @@ class WaterFlowEffect:
         dx = flow_x * displacement_along - flow_y * displacement_across
         dy = flow_y * displacement_along + flow_x * displacement_across
 
-        warped = _bilinear_remap(rgb, x + dx, y + dy)
+        warped = _bilinear_remap(frame.original, x + dx, y + dy)
         if config.shimmer > 0:
             shimmer = (
                 wave_a
@@ -195,6 +212,24 @@ class WaterFlowEffect:
                 * (0.6 + assets.style.contrast * 0.4)
             )
             warped = np.clip(warped + shimmer[..., None], 0.0, 255.0)
+
+        alpha = np.clip(
+            assets.mask * config.opacity * mobility,
+            0.0,
+            1.0,
+        )[..., None]
+        frame.current = warped * alpha + frame.original * (1.0 - alpha)
+
+
+class WaterHighlightLayer:
+    name = "highlights"
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+        data = frame.data["water"]
+        assets = context.assets
+        config = data["config"]
+        wave_a, wave_b, wave_c = data["wave_a"], data["wave_b"], data["wave_c"]
+        flow_speed, mobility = data["flow_speed"], data["mobility"]
 
         highlight_color = _water_highlight_color(assets)
         crest = np.clip(
@@ -209,12 +244,26 @@ class WaterFlowEffect:
             * mobility
             * assets.mask
         )[..., None]
-        warped = warped * (1.0 - highlight_alpha) + highlight_color * highlight_alpha
+        frame.current = (
+            frame.current * (1.0 - highlight_alpha)
+            + highlight_color * highlight_alpha
+        )
+
+
+class WaterFoamLayer:
+    name = "foam"
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+        data = frame.data["water"]
+        assets = context.assets
+        config = data["config"]
+        highlight_color = _water_highlight_color(assets)
 
         foam_pulse = 0.7 + 0.3 * np.sin(
-            local_phase * 2.0
-            + along * (np.pi * 2.0 / max(10.0, config.secondary_wavelength))
-            + phase_c
+            data["phase"] * 2.0
+            + data["along"]
+            * (np.pi * 2.0 / max(10.0, config.secondary_wavelength))
+            + data["phase_c"]
         )
         foam_alpha = np.clip(
             assets.foam * foam_pulse * config.foam_amount * assets.mask,
@@ -222,14 +271,22 @@ class WaterFlowEffect:
             0.9,
         )[..., None]
         foam_color = highlight_color * 0.35 + 255.0 * 0.65
-
-        alpha = np.clip(
-            assets.mask * config.opacity * mobility,
-            0.0,
-            1.0,
-        )[..., None]
-        composed = warped * alpha + rgb * (1.0 - alpha)
         # Foam is composited after motion protection so banks/rocks stay still
         # while the contact foam remains visible beside them.
-        composed = composed * (1.0 - foam_alpha) + foam_color * foam_alpha
-        return Image.fromarray(np.clip(np.rint(composed), 0, 255).astype(np.uint8), mode="RGB")
+        frame.current = (
+            frame.current * (1.0 - foam_alpha) + foam_color * foam_alpha
+        )
+
+
+class WaterFlowEffect(LayeredEffect):
+    effect_type = "water"
+
+    def __init__(self) -> None:
+        super().__init__(
+            (
+                WaterWavesLayer(),
+                WaterDeformationLayer(),
+                WaterHighlightLayer(),
+                WaterFoamLayer(),
+            )
+        )

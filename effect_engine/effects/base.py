@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Mapping, Protocol
+from typing import Protocol
 
 import numpy as np
 from PIL import Image
 
-from ..models import EffectAssets
+from ..context import EffectContext
 
 
 class EffectRenderer(Protocol):
@@ -14,7 +14,5 @@ class EffectRenderer(Protocol):
     def render(
         self,
         image: Image.Image | np.ndarray,
-        assets: EffectAssets,
-        t: float,
-        params: Mapping[str, float] | None = None,
+        context: EffectContext,
     ) -> Image.Image: ...

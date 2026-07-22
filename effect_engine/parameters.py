@@ -3,10 +3,12 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
+from .parameter_schema import default_parameter_schema_registry
 from .preset_registry import PresetRegistry, resolve_card_preset
 
 
 _LEVELS = {
+    "none": 0.0,
     "default": 1.0,
     "low": 0.65,
     "weak": 0.65,
@@ -17,6 +19,7 @@ _LEVELS = {
 }
 
 _OPACITY_LEVELS = {
+    "none": 0.0,
     "default": 0.75,
     "low": 0.45,
     "weak": 0.45,
@@ -50,6 +53,12 @@ _MOTION_PROFILES = {
         "max_strength": 14.0,
         "recommended_cycles": 2,
         "max_cycles": 3,
+    },
+    "rain": {
+        "recommended_strength": 4.0,
+        "max_strength": 14.0,
+        "recommended_cycles": 2,
+        "max_cycles": 6,
     },
 }
 
@@ -113,25 +122,37 @@ def renderer_params_from_card(
         registry=registry,
     )
     result = dict(preset.params) if preset is not None else {}
-    if resolved_effect != "water":
-        return result
-
     values = _main_params(card)
-    intensity = _level(values.get("intensity"), _LEVELS, 1.0)
-    power = _level(values.get("power"), _LEVELS, 1.0)
-    result["strength"] = result.get("strength", 4.0) * intensity * power
-    opacity_value = str(values.get("opacity") or "default").strip().lower()
-    if opacity_value != "default":
-        result["opacity"] = _level(opacity_value, _OPACITY_LEVELS, 0.75)
-    else:
-        result.setdefault("opacity", 0.75)
+    if resolved_effect == "water":
+        intensity = _level(values.get("intensity"), _LEVELS, 1.0)
+        power = _level(values.get("power"), _LEVELS, 1.0)
+        result["strength"] = result.get("strength", 4.0) * intensity * power
+        opacity_value = str(values.get("opacity") or "default").strip().lower()
+        if opacity_value != "default":
+            result["opacity"] = _level(opacity_value, _OPACITY_LEVELS, 0.75)
+        else:
+            result.setdefault("opacity", 0.75)
 
-    randomness = _level(values.get("randomness"), _LEVELS, 1.0)
-    result["secondary_wavelength"] = result.get("secondary_wavelength", 31.0) / max(
-        0.5, randomness
-    )
-    viscosity = _level(values.get("viscosity"), _LEVELS, 1.0)
-    result["wavelength"] = result.get("wavelength", 56.0) * viscosity
+        randomness = _level(values.get("randomness"), _LEVELS, 1.0)
+        result["secondary_wavelength"] = result.get(
+            "secondary_wavelength", 31.0
+        ) / max(0.5, randomness)
+        viscosity = _level(values.get("viscosity"), _LEVELS, 1.0)
+        result["wavelength"] = result.get("wavelength", 56.0) * viscosity
+    else:
+        schemas = default_parameter_schema_registry()
+        if schemas.supports(resolved_effect):
+            schema = schemas.get(resolved_effect)
+            for definition in schema.parameters:
+                raw = values.get(
+                    definition.parameter_id,
+                    values.get(definition.label),
+                )
+                if raw is None:
+                    continue
+                value = definition.coerce(raw)
+                if isinstance(value, (int, float)):
+                    result[definition.parameter_id] = float(value)
 
     motion = (card or {}).get("motion") or {}
     if isinstance(motion, Mapping):

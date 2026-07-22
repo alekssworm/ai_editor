@@ -16,7 +16,12 @@ from PIL import Image
 from PySide6.QtCore import QEventLoop, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QGraphicsScene, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QGraphicsScene,
+    QPushButton,
+)
 
 from draw_tools import ResizableRectItem, SelectableCircleItem
 from effect_engine.preview import PreviewResult
@@ -100,7 +105,7 @@ class EffectPreviewDialogTests(unittest.TestCase):
         self.assertTrue(window.ai_window.ui.water_button.isEnabled())
         self.assertFalse(window.ai_window.ui.fire_button.isEnabled())
         self.assertFalse(window.ai_window.ui.light_button.isEnabled())
-        self.assertFalse(window.ai_window.ui.weather_tool.isEnabled())
+        self.assertTrue(window.ai_window.ui.weather_tool.isEnabled())
         window.close()
 
     def test_ai_render_status_does_not_overwrite_selected_shape(self) -> None:
@@ -440,6 +445,36 @@ class EffectPreviewDialogTests(unittest.TestCase):
         card = window.ai_window.collect_shape_cards_data()[0]
         self.assertEqual(card["preset_id"], "fast_river")
         self.assertEqual(card["main"]["params"]["intensity"], "default")
+        window.close()
+
+    def test_rain_panel_is_built_from_json_parameter_schema(self) -> None:
+        from editor import MainWindow
+        from ui_weather_tool import Ui_weather_tool
+
+        window = MainWindow()
+        panel = window.ai_window
+        panel.add_shape_card(24, "Rectangle", "#00aaff")
+        panel.select_shape_card(24)
+        panel.load_tool_panel(Ui_weather_tool)
+        tool_widget = panel.tool_container_layout.itemAt(
+            panel.tool_container_layout.count() - 1
+        ).widget()
+        button = tool_widget.findChild(QPushButton, "main_Rain")
+
+        self.assertIsNotNone(button)
+        self.assertTrue(button.isVisibleTo(tool_widget))
+        button.click()
+        graphics_widget = panel.shape_cards[24]
+        shape_card = graphics_widget.layout().itemAt(0).widget()
+        density = shape_card.findChild(QDoubleSpinBox)
+        self.assertIsNotNone(density)
+        self.assertEqual(density.property("parameter_id"), "density")
+        density.setValue(0.82)
+
+        card = panel.collect_shape_cards_data()[0]
+        self.assertEqual(card["tool_type"], "rain")
+        self.assertEqual(card["preset_id"], "rain")
+        self.assertEqual(card["main"]["params"]["density"], 0.82)
         window.close()
 
     def test_flow_direction_drag_is_normalized_and_stored(self) -> None:

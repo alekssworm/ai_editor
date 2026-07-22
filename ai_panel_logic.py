@@ -12,7 +12,7 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QMainWindow, QGraphicsScene, QGraphicsView, QLabel, QFrame, QSizePolicy,
     QFormLayout, QFileDialog, QMessageBox, QProgressBar, QHBoxLayout,
-    QGridLayout, QSpinBox, QSlider, QButtonGroup
+    QGridLayout, QSpinBox, QDoubleSpinBox, QSlider, QButtonGroup
 )
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QListView, QAbstractItemView
 
@@ -863,10 +863,12 @@ class AIWindow(QMainWindow):
         self.ui.water_button.setToolTip(
             "Water presets are supported by Local Preview and AI render"
         )
+        self.ui.weather_tool.setToolTip(
+            "Rain presets are supported by the deterministic Local Preview"
+        )
         for button in (
             self.ui.fire_button,
             self.ui.light_button,
-            self.ui.weather_tool,
         ):
             button.setEnabled(False)
             button.setToolTip("Renderer not implemented yet")
@@ -939,7 +941,7 @@ class AIWindow(QMainWindow):
             QFrame#motionSettings { background: #111c2f; border: 1px solid #334155; border-radius: 7px; }
             QPushButton#directionButton { min-height: 0; padding: 0; font-size: 15px; }
             QPushButton#resetEffectsButton { min-height: 24px; padding: 2px 7px; color: #fca5a5; }
-            QSpinBox { background: #172033; color: #f8fafc; border: 1px solid #475569; border-radius: 5px; padding: 3px; }
+            QSpinBox, QDoubleSpinBox { background: #172033; color: #f8fafc; border: 1px solid #475569; border-radius: 5px; padding: 3px; }
             QProgressBar { color: #e5e7eb; background: #1e293b; border: 1px solid #334155; border-radius: 5px; text-align: center; }
             QProgressBar::chunk { background: #22c55e; border-radius: 4px; }
             QScrollArea { background: #0b1220; border: 1px solid #263247; border-radius: 7px; }
@@ -1062,6 +1064,14 @@ class AIWindow(QMainWindow):
             visible_name = button_name.split("_", 1)[-1].replace("_", " ")
             if self._normalize_effect_name(visible_name) == target:
                 return button_name
+        try:
+            from effect_engine.preset_registry import default_preset_registry
+
+            for preset in default_preset_registry().list(tool_type):
+                if self._normalize_effect_name(preset.label) == target:
+                    return preset.editor_key or f"main_{preset.preset_id}"
+        except (KeyError, ValueError):
+            pass
         return None
 
     def restore_shape_cards_data(self, cards):
@@ -1136,7 +1146,11 @@ class AIWindow(QMainWindow):
                     display_name = effect_key.split("_", 1)[-1].replace("_", " ")
 
                 count_before = shape_card.frame_layout.count()
-                self.add_button_name_to_shape_card(display_name, effect_key)
+                self.add_button_name_to_shape_card(
+                    display_name,
+                    effect_key,
+                    effect_type=tool_type,
+                )
                 if shape_card.frame_layout.count() == count_before:
                     continue
 
@@ -1147,9 +1161,30 @@ class AIWindow(QMainWindow):
                     continue
                 for row in range(form_layout.rowCount()):
                     label = form_layout.itemAt(row, QFormLayout.LabelRole).widget()
-                    combo = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
-                    if label and combo and label.text() in saved_params:
-                        combo.setCurrentText(str(saved_params[label.text()]))
+                    field = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
+                    if not label or not field:
+                        continue
+                    parameter_id = str(
+                        field.property("parameter_id") or label.text()
+                    )
+                    if parameter_id in saved_params:
+                        saved_value = saved_params[parameter_id]
+                    elif label.text() in saved_params:
+                        saved_value = saved_params[label.text()]
+                    else:
+                        continue
+                    if hasattr(field, "selected"):
+                        field.setCurrentText(str(saved_value))
+                    elif isinstance(field, QSpinBox):
+                        try:
+                            field.setValue(round(float(saved_value)))
+                        except (TypeError, ValueError):
+                            pass
+                    elif isinstance(field, QDoubleSpinBox):
+                        try:
+                            field.setValue(float(saved_value))
+                        except (TypeError, ValueError):
+                            pass
 
         self.last_tool_type = previous_tool
         if previous_selected_id is None:
@@ -1171,22 +1206,37 @@ class AIWindow(QMainWindow):
         tool_widget = QWidget()
         ui = ui_class()
         ui.setupUi(tool_widget)
+        if ui_class is Ui_weather_tool:
+            # The weather form still contains legacy fog/wind sub-controls.
+            # Rain is the only registered deterministic weather plugin for now.
+            ui.label_162.hide()
+            ui.splitter_325.hide()
+            ui.splitter_328.hide()
 
-        if ui_class is Ui_water_tool:
+        panel_effects = {
+            Ui_water_tool: ("water",),
+            Ui_weather_tool: ("rain",),
+        }.get(ui_class, ())
+        preset_by_key = {}
+        if panel_effects:
             from effect_engine.preset_registry import default_preset_registry
 
+            registry = default_preset_registry()
             existing_keys = {
                 button.objectName().casefold()
                 for button in tool_widget.findChildren(QPushButton)
             }
-            for preset in default_preset_registry().list("water"):
-                editor_key = preset.editor_key or f"main_{preset.preset_id}"
-                if editor_key.casefold() in existing_keys:
-                    continue
-                button = QPushButton(preset.label, ui.splitter_347)
-                button.setObjectName(editor_key)
-                ui.splitter_347.addWidget(button)
-                existing_keys.add(editor_key.casefold())
+            target = ui.splitter_347 if ui_class is Ui_water_tool else ui.splitter_323
+            for effect_type in panel_effects:
+                for preset in registry.list(effect_type):
+                    editor_key = preset.editor_key or f"main_{preset.preset_id}"
+                    preset_by_key[editor_key.casefold()] = preset
+                    if editor_key.casefold() in existing_keys:
+                        continue
+                    button = QPushButton(preset.label, target)
+                    button.setObjectName(editor_key)
+                    target.addWidget(button)
+                    existing_keys.add(editor_key.casefold())
 
         buttons = tool_widget.findChildren(QPushButton)
         print(f"[DEBUG] Найдено {len(buttons)} кнопок в {ui_class.__name__}")
@@ -1194,10 +1244,8 @@ class AIWindow(QMainWindow):
         for btn in buttons:
             btn_text = btn.text().strip()
             btn_name = btn.objectName().strip()
-            supported = (
-                ui_class is Ui_water_tool
-                and btn_name.casefold().startswith("main_")
-            )
+            preset = preset_by_key.get(btn_name.casefold())
+            supported = preset is not None
             if btn_name.casefold().startswith("sub_"):
                 btn.setEnabled(False)
                 btn.setToolTip("This secondary effect is saved only for compatibility")
@@ -1208,8 +1256,17 @@ class AIWindow(QMainWindow):
                 and btn_text.casefold() not in {"x", "color"}
                 and btn_name.casefold() not in {"x", "color"}
             ):
-                btn.clicked.connect(lambda _, text=btn_text, name=btn_name: self.add_button_name_to_shape_card(text, name))
+                btn.clicked.connect(
+                    lambda _, text=btn_text, name=btn_name, effect=preset.effect_type:
+                    self.add_button_name_to_shape_card(
+                        text,
+                        name,
+                        effect_type=effect,
+                    )
+                )
                 print(f"[DEBUG] Привязан обработчик к кнопке: {btn_text} ({btn_name})")
+            elif btn_name.casefold().startswith("main_"):
+                btn.setVisible(False)
 
         tool_widget._tool_class = ui_class
         size_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -1217,7 +1274,13 @@ class AIWindow(QMainWindow):
         self.tool_container_layout.addWidget(tool_widget)
         self._active_tool_widget = tool_widget
 
-    def add_button_name_to_shape_card(self, button_text, button_name):
+    def add_button_name_to_shape_card(
+        self,
+        button_text,
+        button_name,
+        *,
+        effect_type=None,
+    ):
         print(f"[DEBUG] Нажата кнопка: {button_text} ({button_name})")
         selected_id = self.selected_shape_id
         if selected_id is None:
@@ -1236,7 +1299,10 @@ class AIWindow(QMainWindow):
             print(f"[DEBUG] [ERROR] Не удалось получить ShapeCard для ID {selected_id}")
             return
 
-        tool_type = self.last_tool_type.lower().replace('ui_', '').replace('_tool', '')
+        tool_type = str(
+            effect_type
+            or self.last_tool_type.lower().replace('ui_', '').replace('_tool', '')
+        ).lower()
         is_main = button_name.lower().startswith('main_')
         is_sub = button_name.lower().startswith('sub_')
 
@@ -1286,15 +1352,26 @@ class AIWindow(QMainWindow):
         label.setStyleSheet("color: white; font-weight: bold;")
         param_block.addWidget(label)
 
-        params = TOOL_PARAMETERS.get(f"{tool_type}:{button_name}", TOOL_PARAMETERS.get(button_name, []))
-        if is_main and not params:
+        parameter_definitions = ()
+        params = []
+        if is_main:
             try:
+                from effect_engine.parameter_schema import (
+                    default_parameter_schema_registry,
+                )
                 from effect_engine.preset_registry import default_preset_registry
 
                 preset = default_preset_registry().resolve(tool_type, button_name)
-                params = list(preset.controls)
+                parameter_definitions = default_parameter_schema_registry().get(
+                    tool_type
+                ).select(preset.controls)
             except KeyError:
-                pass
+                parameter_definitions = ()
+        if not parameter_definitions:
+            params = TOOL_PARAMETERS.get(
+                f"{tool_type}:{button_name}",
+                TOOL_PARAMETERS.get(button_name, []),
+            )
         from PySide6.QtWidgets import QFormLayout  # обязательно добавить в импорты
 
         form_layout = QFormLayout()
@@ -1304,9 +1381,18 @@ class AIWindow(QMainWindow):
         font = QFont()
         font.setPointSize(12)
         metrics = QFontMetrics(font)
-        max_width = max((metrics.horizontalAdvance(p) for p in params), default=0) + 10
+        display_parameters = (
+            [definition.label for definition in parameter_definitions]
+            if parameter_definitions
+            else list(params)
+        )
+        max_width = max(
+            (metrics.horizontalAdvance(p) for p in display_parameters),
+            default=0,
+        ) + 10
 
-        for param in params:
+        for index, param in enumerate(display_parameters):
+            definition = parameter_definitions[index] if parameter_definitions else None
             label = QLabel(param)
             label.setWordWrap(False)
             label.setStyleSheet(f"""
@@ -1316,14 +1402,52 @@ class AIWindow(QMainWindow):
                 max-width: {max_width}px;
             """)
 
-            combo = InSceneComboBox()
-            combo.addItems(["none", "default", "weak", "normal", "strong"])
-            combo.setCurrentText("default")
-            combo.setFocusPolicy(Qt.StrongFocus)
-            combo.setFocus()
-            combo.setStyleSheet("background-color: #2a2a2a; color: white; padding: 2px;")
+            if definition is None or definition.kind == "enum":
+                field = InSceneComboBox()
+                options = list(definition.options) if definition else [
+                    "none", "default", "weak", "normal", "strong"
+                ]
+                field.addItems(options)
+                field.setCurrentText(
+                    str(definition.default) if definition else "default"
+                )
+            elif definition.kind == "int":
+                field = QSpinBox()
+                field.setRange(
+                    round(
+                        definition.minimum
+                        if definition.minimum is not None
+                        else 0
+                    ),
+                    round(
+                        definition.maximum
+                        if definition.maximum is not None
+                        else 100
+                    ),
+                )
+                field.setSingleStep(max(1, round(definition.step or 1)))
+                field.setValue(int(definition.coerce(definition.default)))
+                field.setSuffix(definition.suffix)
+            else:
+                field = QDoubleSpinBox()
+                field.setDecimals(3)
+                field.setRange(
+                    float(definition.minimum if definition.minimum is not None else -9999),
+                    float(definition.maximum if definition.maximum is not None else 9999),
+                )
+                field.setSingleStep(float(definition.step or 0.1))
+                field.setValue(float(definition.coerce(definition.default)))
+                field.setSuffix(definition.suffix)
+            parameter_id = definition.parameter_id if definition else str(param)
+            field.setProperty("parameter_id", parameter_id)
+            label.setProperty("parameter_id", parameter_id)
+            field.setToolTip(definition.tooltip if definition else "")
+            field.setFocusPolicy(Qt.StrongFocus)
+            field.setStyleSheet(
+                "background-color: #172033; color: white; padding: 2px;"
+            )
 
-            form_layout.addRow(label, combo)
+            form_layout.addRow(label, field)
 
         param_block.addLayout(form_layout)
 
@@ -1382,9 +1506,16 @@ class AIWindow(QMainWindow):
                 params = {}
                 for row in range(form_layout.rowCount()):
                     label = form_layout.itemAt(row, QFormLayout.LabelRole).widget()
-                    combo = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
-                    if label and combo and hasattr(combo, "selected"):
-                        params[label.text()] = combo.selected
+                    field = form_layout.itemAt(row, QFormLayout.FieldRole).widget()
+                    if not label or not field:
+                        continue
+                    parameter_id = str(
+                        field.property("parameter_id") or label.text()
+                    )
+                    if hasattr(field, "selected"):
+                        params[parameter_id] = field.selected
+                    elif isinstance(field, (QSpinBox, QDoubleSpinBox)):
+                        params[parameter_id] = field.value()
 
                 function_data = {"key": function_key, "name": function_label, "params": params}
                 if function_key.lower().startswith("main_"):

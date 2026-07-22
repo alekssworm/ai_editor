@@ -10,7 +10,12 @@ import numpy as np
 from PIL import Image
 
 from effect_engine.cli import resolve_render_params
+from effect_engine.compositor import EffectApplication
+from effect_engine.context import EffectContext
+from effect_engine.effects.rain import RainEffect
+from effect_engine.effects.water import WaterFlowEffect
 from effect_engine.models import ASSET_VERSION, EffectAssets
+from effect_engine.parameter_schema import default_parameter_schema_registry
 from effect_engine.preparation import (
     PreparationPipeline,
     TransformersDepthEstimator,
@@ -541,6 +546,131 @@ class EffectEngineTests(unittest.TestCase):
                 float(normalized_flow[stored.mask > 0.5, 1].mean()), -0.95
             )
             self.assertEqual(stored.metadata["direction"], [0.0, -1.0])
+
+    def test_effect_context_and_water_layers_are_stable(self) -> None:
+        assets = self.prepare(seed=81)
+        context = EffectContext(
+            time=1.25,
+            seed=assets.seed,
+            assets=assets,
+            params={"strength": 3.0},
+        )
+
+        self.assertAlmostEqual(context.time, 0.25)
+        np.testing.assert_array_equal(
+            context.rng("layer").integers(0, 1000, 8),
+            context.rng("layer").integers(0, 1000, 8),
+        )
+        self.assertEqual(
+            WaterFlowEffect().layer_names,
+            ("waves", "deformation", "highlights", "foam"),
+        )
+
+    def test_rain_renderer_is_deterministic_periodic_and_masked(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=27,
+            direction=(0.2, 1.0),
+        )
+        engine = DeterministicEffectEngine()
+        params = {"density": 0.8, "drop_length": 12, "mist": 0.12}
+        frame_zero = np.asarray(engine.render_frame(self.image, assets, 0.0, params))
+        frame_repeat = np.asarray(engine.render_frame(self.image, assets, 1.0, params))
+        frame_middle = np.asarray(engine.render_frame(self.image, assets, 0.35, params))
+
+        np.testing.assert_array_equal(frame_zero, frame_repeat)
+        self.assertFalse(np.array_equal(frame_zero, frame_middle))
+        source = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            frame_middle[assets.mask <= 0.001],
+            source[assets.mask <= 0.001],
+        )
+        self.assertEqual(RainEffect().layer_names, ("streaks", "mist"))
+
+    def test_compositor_applies_multiple_effects_in_order(self) -> None:
+        water = self.prepare(seed=13)
+        rain = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=14,
+            direction=(0.15, 1.0),
+        )
+        engine = DeterministicEffectEngine()
+        water_only = np.asarray(engine.render_frame(self.image, water, 0.3))
+        composed = np.asarray(
+            engine.render_composite_frame(
+                self.image,
+                (
+                    EffectApplication(water, {"strength": 3.0}),
+                    EffectApplication(rain, {"density": 0.9, "mist": 0.1}),
+                ),
+                0.3,
+            )
+        )
+
+        self.assertFalse(np.array_equal(water_only, composed))
+        source = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            composed[np.maximum(water.mask, rain.mask) <= 0.001],
+            source[np.maximum(water.mask, rain.mask) <= 0.001],
+        )
+
+    def test_parameter_schemas_and_rain_preview(self) -> None:
+        schemas = default_parameter_schema_registry()
+        rain_schema = schemas.get("rain")
+        self.assertEqual(rain_schema.get("density").kind, "float")
+        self.assertEqual(rain_schema.get("drop_length").suffix, " px")
+        rain_preset = default_preset_registry().resolve("rain", "main_Rain")
+        self.assertEqual(rain_preset.preset_id, "rain")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 4,
+                        "type": "Rectangle",
+                        "x": 4,
+                        "y": 3,
+                        "width": 38,
+                        "height": 28,
+                    }
+                ],
+                "shape_cards": [
+                    {
+                        "id": 4,
+                        "tool_type": "rain",
+                        "preset_id": "rain",
+                        "main": {
+                            "key": "main_Rain",
+                            "name": "Rain",
+                            "params": {"density": 0.72, "mist": 0.14},
+                        },
+                        "sub": [],
+                    }
+                ],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            result = build_project_preview(
+                project_path,
+                4,
+                direction_override=(0.2, 1.0),
+                frame_count=4,
+                max_dimension=32,
+                seed=29,
+            )
+
+            self.assertEqual(result.effect_type, "rain")
+            self.assertEqual(result.preset_id, "rain")
+            self.assertEqual(result.params["density"], 0.72)
+            self.assertEqual(len(result.frames), 4)
 
     def test_mp4_export_streams_hq_frames_without_duplicate_endpoint(self) -> None:
         class DummyWriter:
