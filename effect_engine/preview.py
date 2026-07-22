@@ -26,6 +26,7 @@ class PreviewResult:
     params: dict[str, float]
     preset_id: str | None = None
     debug_maps: dict[str, Image.Image] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
 
 def effect_asset_debug_maps(assets: EffectAssets) -> dict[str, Image.Image]:
@@ -202,6 +203,12 @@ def build_project_preview(
         params=params,
         preset_id=preset.preset_id if preset is not None else None,
         debug_maps=effect_asset_debug_maps(preview_assets),
+        warnings=tuple(
+            f"{stage}: {message}"
+            for stage, message in (
+                assets.metadata.get("provider_warnings") or {}
+            ).items()
+        ),
     )
 
 

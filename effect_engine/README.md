@@ -16,7 +16,9 @@ Water currently uses `waves`, `deformation`, `highlights` and `foam`; rain uses
 `streaks` and `mist`.
 
 `EffectCompositor` applies multiple prepared effects to the same image in a
-stable order. The engine exposes it through `render_composite_frame` and
+stable order. It keeps intermediate layers in floating point and converts to
+8-bit RGB only once after the final effect, avoiding accumulated rounding loss.
+The engine exposes it through `render_composite_frame` and
 `render_composite_frames`:
 
 ```python
@@ -92,6 +94,8 @@ values such as `weak`, `default` and `strong` remain compatible.
 Rain is the second plugin and validates the shared architecture: its preset is
 stored under `effect_engine/presets/rain`, its controls are numeric and generated
 from `schemas/rain.json`, and its streak/mist layers are periodic at `t=1`.
+Renderer and editor-panel registration share one manifest in `plugins.py`, so a
+new effect is not registered independently in two different code paths.
 
 ### Flow direction
 
@@ -129,6 +133,9 @@ mask-generation and Depth Anything pipeline APIs:
 
 Models are downloaded on first use and cached in the running editor process.
 Leave the checkbox disabled for the lightweight deterministic preparation path.
+If model loading or inference fails, preparation continues with the offline
+mask/depth provider and Preview displays an `AI fallback` warning with the
+original error. The failing provider is not retried on every preview frame.
 Install `torch` for the intended CPU/CUDA environment first, then install the
 client-side model API in the editor virtual environment:
 

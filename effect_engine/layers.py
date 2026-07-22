@@ -34,6 +34,11 @@ class EffectFrame:
             mode="RGB",
         )
 
+    def begin_effect(self) -> None:
+        """Freeze the previous pass as this effect's unmodified source."""
+        self.original = self.current.copy()
+        self.data.clear()
+
 
 class EffectLayer(Protocol):
     name: str
@@ -58,14 +63,17 @@ class LayeredEffect:
         image: Image.Image | np.ndarray,
         context: EffectContext,
     ) -> Image.Image:
+        frame = EffectFrame.from_image(image)
+        self.apply(frame, context)
+        return frame.to_image()
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         if context.assets.effect_type.lower() != self.effect_type.lower():
             raise ValueError(
                 f"Assets for {context.assets.effect_type!r} cannot be rendered as "
                 f"{self.effect_type!r}"
             )
-        frame = EffectFrame.from_image(image)
         if frame.current.shape[:2] != context.mask.shape:
             raise ValueError("image and effect maps must have matching dimensions")
         for layer in self.layers:
             layer.apply(frame, context)
-        return frame.to_image()

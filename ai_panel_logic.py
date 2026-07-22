@@ -1206,19 +1206,21 @@ class AIWindow(QMainWindow):
         tool_widget = QWidget()
         ui = ui_class()
         ui.setupUi(tool_widget)
-        if ui_class is Ui_weather_tool:
+        panel_id = (
+            ui_class.__name__.lower().removeprefix("ui_").removesuffix("_tool")
+        )
+        if panel_id == "weather":
             # The weather form still contains legacy fog/wind sub-controls.
             # Rain is the only registered deterministic weather plugin for now.
             ui.label_162.hide()
             ui.splitter_325.hide()
             ui.splitter_328.hide()
 
-        panel_effects = {
-            Ui_water_tool: ("water",),
-            Ui_weather_tool: ("rain",),
-        }.get(ui_class, ())
+        from effect_engine.plugins import default_effect_plugin_registry
+
+        panel_plugins = default_effect_plugin_registry().for_panel(panel_id)
         preset_by_key = {}
-        if panel_effects:
+        if panel_plugins:
             from effect_engine.preset_registry import default_preset_registry
 
             registry = default_preset_registry()
@@ -1226,8 +1228,14 @@ class AIWindow(QMainWindow):
                 button.objectName().casefold()
                 for button in tool_widget.findChildren(QPushButton)
             }
-            target = ui.splitter_347 if ui_class is Ui_water_tool else ui.splitter_323
-            for effect_type in panel_effects:
+            target_names = {plugin.panel_container for plugin in panel_plugins}
+            if len(target_names) != 1:
+                raise ValueError(
+                    f"Effect plugins in panel '{panel_id}' use different containers"
+                )
+            target = getattr(ui, target_names.pop())
+            for plugin in panel_plugins:
+                effect_type = plugin.effect_type
                 for preset in registry.list(effect_type):
                     editor_key = preset.editor_key or f"main_{preset.preset_id}"
                     preset_by_key[editor_key.casefold()] = preset

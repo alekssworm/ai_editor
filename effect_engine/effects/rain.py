@@ -85,41 +85,111 @@ def _rain_color(context: EffectContext) -> np.ndarray:
 class RainStreakLayer:
     name = "streaks"
 
+    def __init__(self) -> None:
+        self._particle_cache: dict[
+            tuple[int, int, int, int, float], dict[str, np.ndarray]
+        ] = {}
+
+    def _particle_data(
+        self,
+        context: EffectContext,
+        density: float,
+    ) -> dict[str, np.ndarray]:
+        height, width = context.mask.shape
+        cache_key = (
+            id(context.assets),
+            context.seed,
+            width,
+            height,
+            round(float(density), 6),
+        )
+        cached = self._particle_cache.pop(cache_key, None)
+        if cached is not None:
+            self._particle_cache[cache_key] = cached
+            return cached
+        rng = context.rng("rain-streaks")
+        area = width * height
+        count = max(12, min(4000, int(area * density / 700.0)))
+        particles = {
+            "base_x": rng.uniform(0.0, width, size=count),
+            "base_y": rng.uniform(0.0, height, size=count),
+            "phase": rng.uniform(0.0, 1.0, size=count),
+            "length_scale": rng.uniform(0.55, 1.35, size=count),
+            "intensity": rng.uniform(0.35, 1.0, size=count),
+            "thickness": rng.choice((1, 1, 1, 2), size=count),
+        }
+        self._particle_cache[cache_key] = particles
+        if len(self._particle_cache) > 8:
+            self._particle_cache.pop(next(iter(self._particle_cache)))
+        return particles
+
     def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         config = RainParams.from_mapping(context.params)
         height, width = context.mask.shape
-        rng = context.rng("rain-streaks")
-        area = width * height
-        count = max(12, min(4000, int(area * config.density / 700.0)))
-        base_x = rng.uniform(0.0, width, size=count)
-        base_y = rng.uniform(0.0, height, size=count)
-        phase = rng.uniform(0.0, 1.0, size=count)
-        length_scale = rng.uniform(0.55, 1.35, size=count)
-        intensity = rng.uniform(0.35, 1.0, size=count)
-        thickness = rng.choice((1, 1, 1, 2), size=count)
+        particles = self._particle_data(context, config.density)
+        base_x = particles["base_x"]
+        base_y = particles["base_y"]
+        particle_phase = particles["phase"]
+        count = len(base_x)
 
         direction_x, direction_y = _rain_direction(context, config.wind)
-        progress = np.mod(phase + context.time * config.cycles, 1.0)
-        head_x = np.mod(base_x + progress * width * direction_x, width)
-        head_y = np.mod(base_y + progress * height * direction_y, height)
+        trajectory = particle_phase + context.time * config.cycles
+        progress = np.mod(trajectory, 1.0)
+        initial_sine = np.sin(np.pi * 2.0 * particle_phase)
+        current_sine = np.sin(np.pi * 2.0 * trajectory)
+        if abs(direction_y) >= abs(direction_x):
+            head_y = np.mod(
+                base_y + np.sign(direction_y or 1.0) * progress * height,
+                height,
+            )
+            slope = direction_x / max(abs(direction_y), 1e-6)
+            sway = min(width * 0.25, abs(slope) * height / (np.pi * 2.0))
+            head_x = np.mod(
+                base_x + np.sign(direction_x) * sway * (current_sine - initial_sine),
+                width,
+            )
+        else:
+            head_x = np.mod(
+                base_x + np.sign(direction_x or 1.0) * progress * width,
+                width,
+            )
+            slope = direction_y / max(abs(direction_x), 1e-6)
+            sway = min(height * 0.25, abs(slope) * width / (np.pi * 2.0))
+            head_y = np.mod(
+                base_y + np.sign(direction_y) * sway * (current_sine - initial_sine),
+                height,
+            )
         strength_scale = np.clip(0.72 + config.strength / 14.0, 0.75, 2.0)
 
         streaks = Image.new("L", (width, height), 0)
         painter = ImageDraw.Draw(streaks)
         for index in range(count):
-            drop_length = config.drop_length * length_scale[index] * strength_scale
+            drop_length = (
+                config.drop_length
+                * particles["length_scale"][index]
+                * strength_scale
+            )
             end_x = head_x[index] - direction_x * drop_length
             end_y = head_y[index] - direction_y * drop_length
-            alpha = round(255.0 * intensity[index])
+            alpha = round(255.0 * particles["intensity"][index])
             line = (
                 float(head_x[index]),
                 float(head_y[index]),
                 float(end_x),
                 float(end_y),
             )
-            # Draw on a torus so streaks cross every border continuously.
-            for offset_y in (-height, 0, height):
-                for offset_x in (-width, 0, width):
+            x_offsets = [0]
+            y_offsets = [0]
+            if min(line[0], line[2]) < 0:
+                x_offsets.append(width)
+            if max(line[0], line[2]) >= width:
+                x_offsets.append(-width)
+            if min(line[1], line[3]) < 0:
+                y_offsets.append(height)
+            if max(line[1], line[3]) >= height:
+                y_offsets.append(-height)
+            for offset_y in y_offsets:
+                for offset_x in x_offsets:
                     painter.line(
                         (
                             line[0] + offset_x,
@@ -128,7 +198,7 @@ class RainStreakLayer:
                             line[3] + offset_y,
                         ),
                         fill=alpha,
-                        width=int(thickness[index]),
+                        width=int(particles["thickness"][index]),
                     )
 
         streaks = streaks.filter(ImageFilter.GaussianBlur(radius=0.35))
@@ -144,18 +214,50 @@ class RainStreakLayer:
 class RainMistLayer:
     name = "mist"
 
+    def __init__(self) -> None:
+        self._cache: dict[tuple[int, int, int, int], dict[str, object]] = {}
+
+    def _static_data(self, context: EffectContext) -> dict[str, object]:
+        height, width = context.mask.shape
+        cache_key = (id(context.assets), context.seed, width, height)
+        cached = self._cache.pop(cache_key, None)
+        if cached is not None:
+            self._cache[cache_key] = cached
+            return cached
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        phase_a, phase_b = context.rng("rain-mist").uniform(
+            0.0, np.pi * 2.0, size=2
+        )
+        static = {
+            "x": x,
+            "y": y,
+            "phase_a": phase_a,
+            "phase_b": phase_b,
+        }
+        self._cache[cache_key] = static
+        if len(self._cache) > 8:
+            self._cache.pop(next(iter(self._cache)))
+        return static
+
     def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         data = frame.data["rain"]
         config: RainParams = data["config"]
         if config.mist <= 0:
             return
         height, width = context.mask.shape
-        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        rng = context.rng("rain-mist")
-        phase_a, phase_b = rng.uniform(0.0, np.pi * 2.0, size=2)
+        static = self._static_data(context)
+        x, y = static["x"], static["y"]
         wave = (
-            np.sin(x / max(28.0, width * 0.12) + context.phase(1) + phase_a)
-            + np.sin(y / max(24.0, height * 0.16) - context.phase(2) + phase_b)
+            np.sin(
+                x / max(28.0, width * 0.12)
+                + context.phase(1)
+                + static["phase_a"]
+            )
+            + np.sin(
+                y / max(24.0, height * 0.16)
+                - context.phase(2)
+                + static["phase_b"]
+            )
         ) * 0.25 + 0.5
         alpha = np.clip(
             wave * context.mask * config.mist * (0.55 + context.depth * 0.45),

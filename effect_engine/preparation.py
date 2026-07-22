@@ -172,6 +172,31 @@ class TransformersMaskRefiner:
 
 
 @dataclass(slots=True)
+class ResilientMaskRefiner:
+    """Use the offline refiner after the first AI load or inference failure."""
+
+    primary: MaskRefiner
+    fallback: MaskRefiner = field(default_factory=MorphologyMaskRefiner)
+    disabled_reason: str | None = field(default=None, init=False)
+
+    @property
+    def name(self) -> str:
+        return self.fallback.name if self.disabled_reason else self.primary.name
+
+    @property
+    def model(self) -> str | None:
+        return getattr(self.primary, "model", None)
+
+    def refine(self, image: np.ndarray, rough_mask: np.ndarray) -> np.ndarray:
+        if self.disabled_reason is None:
+            try:
+                return self.primary.refine(image, rough_mask)
+            except Exception as error:
+                self.disabled_reason = f"{type(error).__name__}: {error}"
+        return self.fallback.refine(image, rough_mask)
+
+
+@dataclass(slots=True)
 class FlatDepthEstimator:
     value: float = 0.5
     name: str = "flat-depth-v1"
@@ -252,6 +277,31 @@ class TransformersDepthEstimator:
 
 
 @dataclass(slots=True)
+class ResilientDepthEstimator:
+    """Use deterministic image depth after the first AI provider failure."""
+
+    primary: DepthEstimator
+    fallback: DepthEstimator = field(default_factory=ImageAwareDepthEstimator)
+    disabled_reason: str | None = field(default=None, init=False)
+
+    @property
+    def name(self) -> str:
+        return self.fallback.name if self.disabled_reason else self.primary.name
+
+    @property
+    def model(self) -> str | None:
+        return getattr(self.primary, "model", None)
+
+    def estimate(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        if self.disabled_reason is None:
+            try:
+                return self.primary.estimate(image, mask)
+            except Exception as error:
+                self.disabled_reason = f"{type(error).__name__}: {error}"
+        return self.fallback.estimate(image, mask)
+
+
+@dataclass(slots=True)
 class DirectionalFlowEstimator:
     variation: float = 0.28
     name: str = "directional-flow-v2"
@@ -311,9 +361,24 @@ class DirectionalFlowEstimator:
             if float(np.linalg.norm(end - start)) < 1e-6:
                 continue
 
-            nearest_distance = np.full(mask.shape, np.inf, dtype=np.float32)
-            nearest_dx = np.zeros(mask.shape, dtype=np.float32)
-            nearest_dy = np.zeros(mask.shape, dtype=np.float32)
+            # A guide has no useful influence several radii away.  Restricting
+            # the distance search to its bounding box avoids three full-frame
+            # allocations and twelve full-frame distance calculations per
+            # curve (particularly expensive for 4K sources).
+            guide_points = np.stack((start, control1, control2, end))
+            margin = influence_radius * 3.0
+            x0 = max(0, int(np.floor(float(guide_points[:, 0].min()) - margin)))
+            x1 = min(width, int(np.ceil(float(guide_points[:, 0].max()) + margin)) + 1)
+            y0 = max(0, int(np.floor(float(guide_points[:, 1].min()) - margin)))
+            y1 = min(height, int(np.ceil(float(guide_points[:, 1].max()) + margin)) + 1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            region_x = x[y0:y1, x0:x1]
+            region_y = y[y0:y1, x0:x1]
+            region_shape = region_x.shape
+            nearest_distance = np.full(region_shape, np.inf, dtype=np.float32)
+            nearest_dx = np.zeros(region_shape, dtype=np.float32)
+            nearest_dy = np.zeros(region_shape, dtype=np.float32)
             for curve_t in np.linspace(0.0, 1.0, 12, dtype=np.float32):
                 inverse = np.float32(1.0) - curve_t
                 point = (
@@ -331,7 +396,9 @@ class DirectionalFlowEstimator:
                 if tangent_length < 1e-6:
                     continue
                 tangent /= tangent_length
-                distance_sq = (x - point[0]) ** 2 + (y - point[1]) ** 2
+                distance_sq = (
+                    (region_x - point[0]) ** 2 + (region_y - point[1]) ** 2
+                )
                 closer = distance_sq < nearest_distance
                 nearest_distance = np.where(
                     closer, distance_sq, nearest_distance
@@ -340,10 +407,14 @@ class DirectionalFlowEstimator:
                 nearest_dy = np.where(closer, tangent[1], nearest_dy)
 
             distance_sq = nearest_distance
-            weight = 1.0 / (1.0 + distance_sq / (influence_radius**2))
-            direction_x += weight * nearest_dx
-            direction_y += weight * nearest_dy
-            total_weight += weight
+            normalized_distance = np.sqrt(distance_sq) / influence_radius
+            weight = 1.0 / (1.0 + normalized_distance**2)
+            # Smoothly reach zero at the ROI edge to avoid a visible boundary.
+            falloff = np.clip(1.0 - normalized_distance / 3.0, 0.0, 1.0)
+            weight *= falloff * falloff
+            direction_x[y0:y1, x0:x1] += weight * nearest_dx
+            direction_y[y0:y1, x0:x1] += weight * nearest_dy
+            total_weight[y0:y1, x0:x1] += weight
         direction_x /= total_weight
         direction_y /= total_weight
         direction_length = np.maximum(
@@ -436,22 +507,24 @@ def _apply_radial_zones(
     multiply: bool,
 ) -> np.ndarray:
     result = np.asarray(base, dtype=np.float32).copy()
-    height, width = result.shape
-    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
     for zone in zones:
-        try:
-            center_x, center_y = map(float, zone["center"][:2])
-            radius = max(1.0, float(zone["radius"]))
-            value = float(zone.get("value", 1.0))
-        except (KeyError, TypeError, ValueError, IndexError):
+        region = _radial_zone_region(zone, result.shape)
+        if region is None:
             continue
-        distance = np.hypot(x - center_x, y - center_y) / radius
-        influence = np.clip(1.0 - distance, 0.0, 1.0)
-        influence = influence * influence * (3.0 - 2.0 * influence)
+        y_slice, x_slice, influence = region
+        try:
+            value = float(zone.get("value", 1.0))
+        except (TypeError, ValueError):
+            continue
+        target = result[y_slice, x_slice]
         if multiply:
-            result *= 1.0 + (value - 1.0) * influence
+            target *= 1.0 + (value - 1.0) * influence
         else:
-            result = np.maximum(result, np.clip(value, 0.0, 1.0) * influence)
+            np.maximum(
+                target,
+                np.clip(value, 0.0, 1.0) * influence,
+                out=target,
+            )
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
@@ -474,20 +547,45 @@ def _blend_radial_zones(
     zones: list[Mapping[str, Any]],
 ) -> np.ndarray:
     result = np.asarray(base, dtype=np.float32).copy()
-    height, width = result.shape
-    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
     for zone in zones:
-        try:
-            center_x, center_y = map(float, zone["center"][:2])
-            radius = max(1.0, float(zone["radius"]))
-            value = np.clip(float(zone.get("value", 0.5)), 0.0, 1.0)
-        except (KeyError, TypeError, ValueError, IndexError):
+        region = _radial_zone_region(zone, result.shape)
+        if region is None:
             continue
-        distance = np.hypot(x - center_x, y - center_y) / radius
-        influence = np.clip(1.0 - distance, 0.0, 1.0)
-        influence = influence * influence * (3.0 - 2.0 * influence)
-        result = result * (1.0 - influence) + value * influence
+        y_slice, x_slice, influence = region
+        try:
+            value = np.clip(float(zone.get("value", 0.5)), 0.0, 1.0)
+        except (TypeError, ValueError):
+            continue
+        target = result[y_slice, x_slice]
+        target *= 1.0 - influence
+        target += value * influence
     return np.clip(result, 0.0, 1.0).astype(np.float32)
+
+
+def _radial_zone_region(
+    zone: Mapping[str, Any],
+    shape: tuple[int, int],
+) -> tuple[slice, slice, np.ndarray] | None:
+    """Return a clipped ROI and smooth radial influence for one brush zone."""
+    try:
+        center_x, center_y = map(float, zone["center"][:2])
+        radius = max(1.0, float(zone["radius"]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    if not np.isfinite((center_x, center_y, radius)).all():
+        return None
+    height, width = shape
+    x0 = max(0, int(np.floor(center_x - radius)))
+    x1 = min(width, int(np.ceil(center_x + radius)) + 1)
+    y0 = max(0, int(np.floor(center_y - radius)))
+    y1 = min(height, int(np.ceil(center_y + radius)) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return None
+    y, x = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+    distance = np.hypot(x - center_x, y - center_y) / radius
+    influence = np.clip(1.0 - distance, 0.0, 1.0)
+    influence *= influence * (3.0 - 2.0 * influence)
+    return slice(y0, y1), slice(x0, x1), influence
 
 
 @dataclass(slots=True)
@@ -641,6 +739,16 @@ class PreparationPipeline:
                 if (model := getattr(provider, "model", None))
             },
         }
+        provider_warnings = {
+            key: str(reason)
+            for key, provider in (
+                ("mask", self.mask_refiner),
+                ("depth", self.depth_estimator),
+            )
+            if (reason := getattr(provider, "disabled_reason", None))
+        }
+        if provider_warnings:
+            preparation_metadata["provider_warnings"] = provider_warnings
         preparation_metadata.update(metadata or {})
         if direction is not None:
             preparation_metadata["direction"] = [float(direction[0]), float(direction[1])]
@@ -703,13 +811,17 @@ def create_preparation_pipeline(use_ai: bool | None = None) -> PreparationPipeli
     if cache_key in _AI_PIPELINE_CACHE:
         return _AI_PIPELINE_CACHE[cache_key]
     prepared = PreparationPipeline(
-        mask_refiner=TransformersMaskRefiner(
-            model=mask_model,
-            device=device,
+        mask_refiner=ResilientMaskRefiner(
+            primary=TransformersMaskRefiner(
+                model=mask_model,
+                device=device,
+            ),
         ),
-        depth_estimator=TransformersDepthEstimator(
-            model=depth_model,
-            device=device,
+        depth_estimator=ResilientDepthEstimator(
+            primary=TransformersDepthEstimator(
+                model=depth_model,
+                device=device,
+            ),
         ),
     )
     _AI_PIPELINE_CACHE[cache_key] = prepared

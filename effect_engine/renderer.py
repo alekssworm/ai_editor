@@ -11,16 +11,15 @@ from PIL import Image
 
 from .compositor import EffectApplication, EffectCompositor
 from .effects.base import EffectRenderer
-from .effects.rain import RainEffect
-from .effects.water import WaterFlowEffect
 from .models import EffectAssets
+from .plugins import default_effect_plugin_registry
 
 
 class DeterministicEffectEngine:
     def __init__(self) -> None:
         self._effects: dict[str, EffectRenderer] = {}
-        self.register(WaterFlowEffect())
-        self.register(RainEffect())
+        for plugin in default_effect_plugin_registry().list():
+            self.register(plugin.create_renderer())
         self._compositor = EffectCompositor(self._effects)
 
     def register(self, effect: EffectRenderer) -> None:

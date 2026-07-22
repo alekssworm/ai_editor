@@ -21,20 +21,52 @@ def _reflect_coordinates(values: np.ndarray, size: int) -> np.ndarray:
 
 def _bilinear_remap(image: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
     height, width = image.shape[:2]
-    x = _reflect_coordinates(map_x, width)
-    y = _reflect_coordinates(map_y, height)
+    output = np.empty_like(image, dtype=np.float32)
+    # Tiling keeps the four gathered RGB neighbours from occupying hundreds of
+    # megabytes at 4K while preserving exactly the same interpolation.
+    for row_start in range(0, height, 192):
+        row_end = min(height, row_start + 192)
+        x = _reflect_coordinates(map_x[row_start:row_end], width)
+        y = _reflect_coordinates(map_y[row_start:row_end], height)
 
-    x0 = np.floor(x).astype(np.int32)
-    y0 = np.floor(y).astype(np.int32)
-    x1 = np.minimum(x0 + 1, width - 1)
-    y1 = np.minimum(y0 + 1, height - 1)
+        x0 = np.floor(x).astype(np.int32)
+        y0 = np.floor(y).astype(np.int32)
+        x1 = np.minimum(x0 + 1, width - 1)
+        y1 = np.minimum(y0 + 1, height - 1)
 
-    wx = (x - x0)[..., None]
-    wy = (y - y0)[..., None]
+        wx = (x - x0)[..., None]
+        wy = (y - y0)[..., None]
+        top = image[y0, x0] * (1.0 - wx) + image[y0, x1] * wx
+        bottom = image[y1, x0] * (1.0 - wx) + image[y1, x1] * wx
+        output[row_start:row_end] = top * (1.0 - wy) + bottom * wy
+    return output
 
-    top = image[y0, x0] * (1.0 - wx) + image[y0, x1] * wx
-    bottom = image[y1, x0] * (1.0 - wx) + image[y1, x1] * wx
-    return top * (1.0 - wy) + bottom * wy
+
+def _integrated_flow_coordinates(
+    flow_x: np.ndarray,
+    flow_y: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build continuous approximate streamline coordinates from a dense flow."""
+    height, width = flow_x.shape
+    center_x = width // 2
+    center_y = height // 2
+
+    # Integrate each coordinate along its natural axis, then anchor the scan
+    # lines through the image centre.  Unlike x*flow_x + y*flow_y, a local
+    # direction change cannot multiply a tiny vector change by a large pixel
+    # coordinate and create a phase discontinuity.
+    along = np.cumsum(flow_x, axis=1, dtype=np.float32)
+    along -= along[:, center_x : center_x + 1]
+    row_offsets = np.cumsum(flow_y[:, center_x], dtype=np.float32)
+    row_offsets -= row_offsets[center_y]
+    along += row_offsets[:, None]
+
+    across = np.cumsum(-flow_y, axis=0, dtype=np.float32)
+    across -= across[center_y : center_y + 1, :]
+    column_offsets = np.cumsum(flow_x[center_y, :], dtype=np.float32)
+    column_offsets -= column_offsets[center_x]
+    across += column_offsets[None, :]
+    return along, across
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,74 +136,96 @@ def _water_highlight_color(assets: EffectAssets) -> np.ndarray:
 class WaterWavesLayer:
     name = "waves"
 
-    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+    def __init__(self) -> None:
+        self._cache: dict[tuple[int, int, int, int], dict[str, object]] = {}
+
+    def _static_data(self, context: EffectContext) -> dict[str, object]:
         assets = context.assets
-        config = WaterFlowParams.from_mapping(context.params)
-        phase = np.float32(context.phase(config.cycles))
-        rng = context.rng("water-waves")
-        phase_a, phase_b, phase_c = rng.uniform(
-            0.0, np.pi * 2.0, size=3
-        ).astype(np.float32)
-        frequency_scale = np.float32(rng.uniform(0.9, 1.1))
+        cache_key = (id(assets), context.seed, assets.width, assets.height)
+        cached = self._cache.pop(cache_key, None)
+        if cached is not None:
+            self._cache[cache_key] = cached
+            return cached
 
         height, width = assets.mask.shape
         y, x = np.mgrid[0:height, 0:width].astype(np.float32)
         flow_x = assets.flow[..., 0]
         flow_y = assets.flow[..., 1]
-        flow_speed = np.asarray(assets.speed, dtype=np.float32)
-        mobility = np.clip(1.0 - assets.obstacles, 0.0, 1.0)
-        style_scale = np.float32(
-            np.clip(
-                0.85 + assets.style.edge_softness * 0.25 - assets.style.grain * 0.1,
-                0.7,
-                1.15,
-            )
-        )
-        along = x * flow_x + y * flow_y
-        across = -x * flow_y + y * flow_x
+        along, across = _integrated_flow_coordinates(flow_x, flow_y)
+        rng = context.rng("water-waves")
+        phase_a, phase_b, phase_c = rng.uniform(
+            0.0, np.pi * 2.0, size=3
+        ).astype(np.float32)
+        static = {
+            "x": x,
+            "y": y,
+            "along": along,
+            "across": across,
+            "flow_x": flow_x,
+            "flow_y": flow_y,
+            "flow_speed": np.asarray(assets.speed, dtype=np.float32),
+            "mobility": np.clip(1.0 - assets.obstacles, 0.0, 1.0),
+            "depth_scale": 0.65 + assets.depth * 0.7,
+            "style_scale": np.float32(
+                np.clip(
+                    0.85
+                    + assets.style.edge_softness * 0.25
+                    - assets.style.grain * 0.1,
+                    0.7,
+                    1.15,
+                )
+            ),
+            "phase_a": phase_a,
+            "phase_b": phase_b,
+            "phase_c": phase_c,
+            "frequency_scale": np.float32(rng.uniform(0.9, 1.1)),
+            "highlight_color": _water_highlight_color(assets),
+        }
+        self._cache[cache_key] = static
+        if len(self._cache) > 8:
+            self._cache.pop(next(iter(self._cache)))
+        return static
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None:
+        config = WaterFlowParams.from_mapping(context.params)
+        phase = np.float32(context.phase(config.cycles))
+        static = self._static_data(context)
+        along = static["along"]
+        across = static["across"]
+        flow_speed = static["flow_speed"]
 
         # Temporal multipliers stay integer so t=1 wraps exactly to t=0.
-        # Local speed changes wavelength/amplitude instead of breaking the loop.
+        # Speed changes amplitude; the integrated coordinates keep phase smooth
+        # through bends and reversals in the editable flow field.
         local_phase = phase
-        spatial_speed = 0.72 + flow_speed * 0.56
         wave_a = np.sin(
             along
             * (np.pi * 2.0 / config.wavelength)
-            * frequency_scale
-            * spatial_speed
+            * static["frequency_scale"]
             - local_phase
-            + phase_a
+            + static["phase_a"]
         )
         wave_b = np.sin(
             across
             * (np.pi * 2.0 / config.secondary_wavelength)
-            * spatial_speed
             - local_phase * 2.0
-            + phase_b
+            + static["phase_b"]
         )
         wave_c = np.sin(
             (along + across * 0.38)
             * (np.pi * 2.0 / max(8.0, config.wavelength * 0.46))
             - local_phase * 3.0
-            + phase_c
+            + static["phase_c"]
         )
 
-        frame.data["water"] = {
+        frame.data["water"] = dict(static)
+        frame.data["water"].update({
             "config": config,
-            "x": x,
-            "y": y,
-            "along": along,
-            "flow_x": flow_x,
-            "flow_y": flow_y,
-            "flow_speed": flow_speed,
-            "mobility": mobility,
-            "style_scale": style_scale,
             "phase": phase,
-            "phase_c": phase_c,
             "wave_a": wave_a,
             "wave_b": wave_b,
             "wave_c": wave_c,
-        }
+        })
 
 
 class WaterDeformationLayer:
@@ -186,10 +240,9 @@ class WaterDeformationLayer:
         flow_speed, mobility = data["flow_speed"], data["mobility"]
         wave_a, wave_b, wave_c = data["wave_a"], data["wave_b"], data["wave_c"]
 
-        depth_scale = 0.65 + assets.depth * 0.7
         amplitude = (
             np.float32(config.strength)
-            * depth_scale
+            * data["depth_scale"]
             * data["style_scale"]
             * flow_speed
             * mobility
@@ -231,7 +284,7 @@ class WaterHighlightLayer:
         wave_a, wave_b, wave_c = data["wave_a"], data["wave_b"], data["wave_c"]
         flow_speed, mobility = data["flow_speed"], data["mobility"]
 
-        highlight_color = _water_highlight_color(assets)
+        highlight_color = data["highlight_color"]
         crest = np.clip(
             wave_a * 0.48 + wave_b * 0.28 + wave_c * 0.24,
             0.0,
@@ -257,7 +310,7 @@ class WaterFoamLayer:
         data = frame.data["water"]
         assets = context.assets
         config = data["config"]
-        highlight_color = _water_highlight_color(assets)
+        highlight_color = data["highlight_color"]
 
         foam_pulse = 0.7 + 0.3 * np.sin(
             data["phase"] * 2.0

@@ -8,6 +8,7 @@ from PIL import Image
 
 from .context import EffectContext
 from .effects.base import EffectRenderer
+from .layers import EffectFrame
 from .models import EffectAssets
 
 
@@ -31,11 +32,7 @@ class EffectCompositor:
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         time: float,
     ) -> Image.Image:
-        current = (
-            image.convert("RGB")
-            if isinstance(image, Image.Image)
-            else Image.fromarray(np.asarray(image, dtype=np.uint8)[..., :3], mode="RGB")
-        )
+        frame = EffectFrame.from_image(image)
         for application in applications:
             effect_type = application.assets.effect_type.lower()
             try:
@@ -50,5 +47,6 @@ class EffectCompositor:
                 assets=application.assets,
                 params=application.params,
             )
-            current = renderer.render(current, context)
-        return current
+            frame.begin_effect()
+            renderer.apply(frame, context)
+        return frame.to_image()

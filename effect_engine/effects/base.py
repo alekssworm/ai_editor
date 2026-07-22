@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 
 from ..context import EffectContext
+from ..layers import EffectFrame
 
 
 class EffectRenderer(Protocol):
@@ -16,3 +17,5 @@ class EffectRenderer(Protocol):
         image: Image.Image | np.ndarray,
         context: EffectContext,
     ) -> Image.Image: ...
+
+    def apply(self, frame: EffectFrame, context: EffectContext) -> None: ...

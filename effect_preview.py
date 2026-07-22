@@ -66,11 +66,17 @@ class EffectPreviewDialog(QDialog):
         self.preview_label.setMinimumSize(420, 280)
         self.preview_label.setStyleSheet("background: #151515; border: 1px solid #444;")
 
-        self.status_label = QLabel(
+        status = (
             f"{result.effect_type}/{result.preset_id or 'default'} · "
             f"{len(result.frames)} frames · {result.fps} fps"
         )
-        self.status_label.setToolTip(str(result.assets_dir))
+        if result.warnings:
+            status += " · AI fallback"
+        self.status_label = QLabel(status)
+        tooltip = str(result.assets_dir)
+        if result.warnings:
+            tooltip += "\n\nAI fallback:\n" + "\n".join(result.warnings)
+        self.status_label.setToolTip(tooltip)
 
         self.play_button = QPushButton("Pause")
         self.play_button.clicked.connect(self._toggle_playback)

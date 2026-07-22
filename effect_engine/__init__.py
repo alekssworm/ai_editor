@@ -10,8 +10,15 @@ from .parameter_schema import (
     ParameterSchemaRegistry,
     default_parameter_schema_registry,
 )
+from .plugins import (
+    EffectPluginManifest,
+    EffectPluginRegistry,
+    default_effect_plugin_registry,
+)
 from .preparation import (
     PreparationPipeline,
+    ResilientDepthEstimator,
+    ResilientMaskRefiner,
     TransformersDepthEstimator,
     TransformersMaskRefiner,
     create_preparation_pipeline,
@@ -27,7 +34,10 @@ __all__ = [
     "EffectFrame",
     "EffectLayer",
     "EffectParameterSchema",
+    "EffectPluginManifest",
+    "EffectPluginRegistry",
     "LayeredEffect",
+    "default_effect_plugin_registry",
     "ParameterDefinition",
     "ParameterSchemaRegistry",
     "DeterministicEffectEngine",
@@ -35,6 +45,8 @@ __all__ = [
     "EffectAssetStore",
     "EffectPreset",
     "PreparationPipeline",
+    "ResilientDepthEstimator",
+    "ResilientMaskRefiner",
     "PresetRegistry",
     "StyleProfile",
     "TransformersDepthEstimator",

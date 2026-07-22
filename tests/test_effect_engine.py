@@ -10,18 +10,22 @@ import numpy as np
 from PIL import Image
 
 from effect_engine.cli import resolve_render_params
-from effect_engine.compositor import EffectApplication
+from effect_engine.compositor import EffectApplication, EffectCompositor
 from effect_engine.context import EffectContext
 from effect_engine.effects.rain import RainEffect
-from effect_engine.effects.water import WaterFlowEffect
+from effect_engine.effects.water import WaterFlowEffect, _integrated_flow_coordinates
+from effect_engine.layers import LayeredEffect
 from effect_engine.models import ASSET_VERSION, EffectAssets
 from effect_engine.parameter_schema import default_parameter_schema_registry
 from effect_engine.preparation import (
     PreparationPipeline,
+    ResilientDepthEstimator,
+    ResilientMaskRefiner,
     TransformersDepthEstimator,
     TransformersMaskRefiner,
     create_preparation_pipeline,
 )
+from effect_engine.plugins import default_effect_plugin_registry
 from effect_engine.preview import build_project_preview, renderer_params_from_card
 from effect_engine.preset_registry import PresetRegistry, default_preset_registry
 from effect_engine.project import (
@@ -394,6 +398,51 @@ class EffectEngineTests(unittest.TestCase):
         self.assertAlmostEqual(params["opacity"], 0.45)
         self.assertLess(params["secondary_wavelength"], 24.0)
 
+    def test_still_water_visual_controls_change_renderer_params(self) -> None:
+        subtle = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "main": {
+                    "params": {
+                        "transparency": "weak",
+                        "reflections": "low",
+                        "grain": "low",
+                    }
+                },
+            }
+        )
+        pronounced = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "main": {
+                    "params": {
+                        "transparency": "high",
+                        "reflections": "high",
+                        "grain": "high",
+                    }
+                },
+            }
+        )
+
+        self.assertLess(pronounced["opacity"], subtle["opacity"])
+        self.assertGreater(pronounced["highlight"], subtle["highlight"])
+        self.assertGreater(pronounced["turbulence"], subtle["turbulence"])
+        self.assertGreater(pronounced["shimmer"], subtle["shimmer"])
+
+    def test_integrated_water_phase_avoids_direction_flip_jump(self) -> None:
+        flow_x = np.ones((5, 101), dtype=np.float32)
+        flow_x[:, 51:] = -1.0
+        flow_y = np.zeros_like(flow_x)
+
+        along, across = _integrated_flow_coordinates(flow_x, flow_y)
+        old_coordinate = np.arange(101, dtype=np.float32) * flow_x[2]
+
+        self.assertGreater(float(np.abs(np.diff(old_coordinate)).max()), 90.0)
+        self.assertLessEqual(float(np.abs(np.diff(along[2])).max()), 1.01)
+        self.assertTrue(np.isfinite(across).all())
+
     def test_numeric_motion_settings_override_strength_and_keep_whole_cycles(self) -> None:
         card = {
             "tool_type": "water",
@@ -589,6 +638,31 @@ class EffectEngineTests(unittest.TestCase):
         )
         self.assertEqual(RainEffect().layer_names, ("streaks", "mist"))
 
+    def test_rain_motion_is_visually_continuous_at_loop_seam(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=33,
+            direction=(1.0, 0.35),
+        )
+        engine = DeterministicEffectEngine()
+        params = {"density": 1.0, "cycles": 2, "mist": 0.0}
+        frame_zero = np.asarray(
+            engine.render_frame(self.image, assets, 0.0, params), dtype=np.float32
+        )
+        frame_near_seam = np.asarray(
+            engine.render_frame(self.image, assets, 0.999, params), dtype=np.float32
+        )
+        frame_middle = np.asarray(
+            engine.render_frame(self.image, assets, 0.5 / 2.0, params),
+            dtype=np.float32,
+        )
+        seam_error = float(np.mean((frame_zero - frame_near_seam) ** 2))
+        middle_error = float(np.mean((frame_zero - frame_middle) ** 2))
+
+        self.assertLess(seam_error, middle_error)
+
     def test_compositor_applies_multiple_effects_in_order(self) -> None:
         water = self.prepare(seed=13)
         rain = self.pipeline.prepare(
@@ -617,6 +691,98 @@ class EffectEngineTests(unittest.TestCase):
             composed[np.maximum(water.mask, rain.mask) <= 0.001],
             source[np.maximum(water.mask, rain.mask) <= 0.001],
         )
+
+    def test_compositor_quantizes_only_after_all_effects(self) -> None:
+        class FractionalLayer:
+            name = "fractional"
+
+            def apply(self, frame, context) -> None:
+                frame.current += context.mask[..., None] * 0.4
+
+        class FractionalEffect(LayeredEffect):
+            effect_type = "fractional"
+
+            def __init__(self) -> None:
+                super().__init__((FractionalLayer(),))
+
+        zeros = np.zeros((1, 1), dtype=np.float32)
+        assets = EffectAssets(
+            effect_type="fractional",
+            seed=1,
+            mask=np.ones_like(zeros),
+            depth=zeros,
+            flow=np.zeros((1, 1, 2), dtype=np.float32),
+        )
+        compositor = EffectCompositor({"fractional": FractionalEffect()})
+        output = np.asarray(
+            compositor.compose(
+                np.zeros((1, 1, 3), dtype=np.uint8),
+                (EffectApplication(assets), EffectApplication(assets)),
+                0.0,
+            )
+        )
+
+        np.testing.assert_array_equal(output, np.ones((1, 1, 3), dtype=np.uint8))
+
+    def test_ai_provider_failures_fall_back_once_and_are_reported(self) -> None:
+        class BrokenMaskRefiner:
+            name = "broken-mask"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def refine(self, image, rough_mask):
+                self.calls += 1
+                raise RuntimeError("mask unavailable")
+
+        class BrokenDepthEstimator:
+            name = "broken-depth"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def estimate(self, image, mask):
+                self.calls += 1
+                raise RuntimeError("depth unavailable")
+
+        broken_mask = BrokenMaskRefiner()
+        broken_depth = BrokenDepthEstimator()
+        pipeline = PreparationPipeline(
+            mask_refiner=ResilientMaskRefiner(primary=broken_mask),
+            depth_estimator=ResilientDepthEstimator(primary=broken_depth),
+        )
+
+        first = pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=8,
+        )
+        pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=9,
+        )
+
+        self.assertEqual(broken_mask.calls, 1)
+        self.assertEqual(broken_depth.calls, 1)
+        self.assertEqual(
+            set(first.metadata["provider_warnings"]),
+            {"mask", "depth"},
+        )
+
+    def test_plugin_manifest_registers_renderer_and_panel_together(self) -> None:
+        registry = default_effect_plugin_registry()
+        plugins = {plugin.effect_type: plugin for plugin in registry.list()}
+
+        self.assertEqual(set(plugins), {"water", "rain"})
+        self.assertEqual(
+            [plugin.effect_type for plugin in registry.for_panel("weather")],
+            ["rain"],
+        )
+        self.assertEqual(plugins["water"].panel_container, "splitter_347")
+        self.assertIsInstance(plugins["water"].create_renderer(), WaterFlowEffect)
 
     def test_parameter_schemas_and_rain_preview(self) -> None:
         schemas = default_parameter_schema_registry()

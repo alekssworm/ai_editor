@@ -29,6 +29,17 @@ _OPACITY_LEVELS = {
     "strong": 1.0,
 }
 
+_TRANSPARENCY_MULTIPLIERS = {
+    "none": 1.0,
+    "default": 1.0,
+    "low": 0.9,
+    "weak": 0.9,
+    "normal": 0.7,
+    "medium": 0.7,
+    "high": 0.45,
+    "strong": 0.45,
+}
+
 _MOTION_PROFILES = {
     "still_water": {
         "recommended_strength": 2.0,
@@ -133,12 +144,27 @@ def renderer_params_from_card(
         else:
             result.setdefault("opacity", 0.75)
 
+        transparency = str(
+            values.get("transparency") or "default"
+        ).strip().lower()
+        result["opacity"] *= _TRANSPARENCY_MULTIPLIERS.get(
+            transparency,
+            1.0,
+        )
+
         randomness = _level(values.get("randomness"), _LEVELS, 1.0)
         result["secondary_wavelength"] = result.get(
             "secondary_wavelength", 31.0
         ) / max(0.5, randomness)
         viscosity = _level(values.get("viscosity"), _LEVELS, 1.0)
         result["wavelength"] = result.get("wavelength", 56.0) * viscosity
+
+        reflections = _level(values.get("reflections"), _LEVELS, 1.0)
+        result["highlight"] = result.get("highlight", 0.18) * reflections
+
+        grain = _level(values.get("grain"), _LEVELS, 1.0)
+        result["turbulence"] = result.get("turbulence", 0.25) * grain
+        result["shimmer"] = result.get("shimmer", 0.04) * grain
     else:
         schemas = default_parameter_schema_registry()
         if schemas.supports(resolved_effect):
