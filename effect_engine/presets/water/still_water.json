@@ -10,6 +10,9 @@
     "strength": 2.0,
     "wavelength": 92.0,
     "secondary_wavelength": 58.0,
-    "opacity": 0.75
+    "opacity": 0.75,
+    "advection": 0.2,
+    "cross_flow": 0.7,
+    "shimmer": 0.08
   }
 }

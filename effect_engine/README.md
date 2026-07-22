@@ -49,7 +49,10 @@ Save or open a project, select one shape with a water card, then press the main
 window's `preview` button. Preparation runs outside the UI thread and writes the
 full-resolution maps to `effect_assets/shape_<id>`. The preview dialog renders a
 smaller 640-pixel copy of those maps as an 18-frame loop, so preview speed does
-not reduce the quality of assets kept for export.
+not reduce the quality of assets kept for export. Press `Export MP4 (24 fps)`
+inside the preview window for a full-resolution 72-frame H.264 loop. The export
+streams frames to an atomic temporary file at CRF 18 instead of keeping the
+whole video in memory.
 
 The current deterministic renderer supports the water tool. Fire, weather and
 light cards produce a clear error until their renderers are implemented.
@@ -57,6 +60,14 @@ light cards produce a clear error until their renderers are implemented.
 ### Flow direction
 
 Select an area and press `settings`, then drag over the area in the intended
-direction of motion. The normalized vector is displayed as a cyan arrow, saved
-under `flow_directions` in `shapes.json`, and used by both Preview and CLI asset
-preparation. Right-click, `Esc`, or a second press on `settings` cancels editing.
+direction of motion. A normal drag replaces the flow; `Shift`+drag adds up to
+eight local guides for bends, banks and waterfalls. The guides are displayed as
+cyan arrows, saved under `flow_guides` in `shapes.json`, and converted to a dense
+flow/speed map during preparation. Right-click, `Esc`, or a second press on
+`settings` finishes editing.
+
+Water presets also apply effect-specific safe limits to strength and loop
+cycles. Still water stays subtle, while river, fast river and waterfall allow
+progressively stronger motion. These limits are shared by the local renderer
+and AI post-processing so extreme settings do not turn the selected area into
+rubber.

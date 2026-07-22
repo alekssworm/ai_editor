@@ -43,6 +43,9 @@ class WaterFlowParams:
     secondary_wavelength: float = 31.0
     opacity: float = 1.0
     cycles: int = 1
+    advection: float = 0.6
+    cross_flow: float = 0.7
+    shimmer: float = 0.04
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, float] | None) -> "WaterFlowParams":
@@ -57,6 +60,15 @@ class WaterFlowParams:
             ),
             opacity=float(np.clip(values.get("opacity", defaults.opacity), 0.0, 1.0)),
             cycles=max(1, min(8, int(values.get("cycles", defaults.cycles)))),
+            advection=float(
+                np.clip(values.get("advection", defaults.advection), 0.0, 1.5)
+            ),
+            cross_flow=float(
+                np.clip(values.get("cross_flow", defaults.cross_flow), 0.0, 1.5)
+            ),
+            shimmer=float(
+                np.clip(values.get("shimmer", defaults.shimmer), 0.0, 0.25)
+            ),
         )
 
 
@@ -87,8 +99,14 @@ class WaterFlowEffect:
 
         height, width = assets.mask.shape
         y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        flow_x = assets.flow[..., 0]
-        flow_y = assets.flow[..., 1]
+        raw_flow_x = assets.flow[..., 0]
+        raw_flow_y = assets.flow[..., 1]
+        flow_speed = np.clip(
+            np.hypot(raw_flow_x, raw_flow_y), 0.0, 1.0
+        ).astype(np.float32)
+        safe_length = np.maximum(flow_speed, 1e-6)
+        flow_x = raw_flow_x / safe_length
+        flow_y = raw_flow_y / safe_length
         style_scale = np.float32(
             np.clip(
                 0.85 + assets.style.edge_softness * 0.25 - assets.style.grain * 0.1,
@@ -107,13 +125,26 @@ class WaterFlowEffect:
         )
 
         depth_scale = 0.65 + assets.depth * 0.7
-        amplitude = np.float32(config.strength) * depth_scale * style_scale
-        displacement_along = amplitude * 0.45 * wave_a
-        displacement_across = amplitude * wave_b
+        amplitude = (
+            np.float32(config.strength)
+            * depth_scale
+            * style_scale
+            * (0.15 + flow_speed * 0.85)
+        )
+        displacement_along = amplitude * (0.2 + config.advection * 0.45) * wave_a
+        displacement_across = amplitude * config.cross_flow * wave_b
         dx = flow_x * displacement_along - flow_y * displacement_across
         dy = flow_y * displacement_along + flow_x * displacement_across
 
         warped = _bilinear_remap(rgb, x + dx, y + dy)
+        if config.shimmer > 0:
+            shimmer = (
+                wave_a
+                * wave_b
+                * np.float32(config.shimmer * 10.0)
+                * (0.6 + assets.style.contrast * 0.4)
+            )
+            warped = np.clip(warped + shimmer[..., None], 0.0, 255.0)
         alpha = np.clip(assets.mask * config.opacity, 0.0, 1.0)[..., None]
         composed = warped * alpha + rgb * (1.0 - alpha)
         return Image.fromarray(np.clip(np.rint(composed), 0, 255).astype(np.uint8), mode="RGB")

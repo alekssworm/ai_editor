@@ -50,6 +50,7 @@ class FlowEstimator(Protocol):
         image: np.ndarray,
         mask: np.ndarray,
         direction: tuple[float, float] | None = None,
+        guides: list[dict[str, list[float]]] | None = None,
     ) -> np.ndarray: ...
 
 
@@ -139,12 +140,45 @@ class DirectionalFlowEstimator:
         image: np.ndarray,
         mask: np.ndarray,
         direction: tuple[float, float] | None = None,
+        guides: list[dict[str, list[float]]] | None = None,
     ) -> np.ndarray:
         dx, dy = direction or self._principal_direction(mask)
         length = float(np.hypot(dx, dy))
         if length < 1e-8:
             dx, dy, length = 1.0, 0.0, 1.0
         dx, dy = dx / length, dy / length
+        height, width = mask.shape
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        direction_x = np.full(mask.shape, dx * 0.35, dtype=np.float32)
+        direction_y = np.full(mask.shape, dy * 0.35, dtype=np.float32)
+        total_weight = np.full(mask.shape, 0.35, dtype=np.float32)
+        influence_radius = max(24.0, min(width, height) * 0.18)
+        for guide in guides or []:
+            try:
+                start_x, start_y = map(float, guide["start"][:2])
+                end_x, end_y = map(float, guide["end"][:2])
+            except (KeyError, TypeError, ValueError):
+                continue
+            guide_dx, guide_dy = end_x - start_x, end_y - start_y
+            guide_length = float(np.hypot(guide_dx, guide_dy))
+            if guide_length < 1e-6:
+                continue
+            guide_dx, guide_dy = guide_dx / guide_length, guide_dy / guide_length
+            center_x = (start_x + end_x) * 0.5
+            center_y = (start_y + end_y) * 0.5
+            distance_sq = (x - center_x) ** 2 + (y - center_y) ** 2
+            weight = 1.0 / (1.0 + distance_sq / (influence_radius**2))
+            direction_x += weight * guide_dx
+            direction_y += weight * guide_dy
+            total_weight += weight
+        direction_x /= total_weight
+        direction_y /= total_weight
+        direction_length = np.maximum(
+            np.hypot(direction_x, direction_y), 1e-6
+        )
+        direction_x /= direction_length
+        direction_y /= direction_length
+
         gray = np.asarray(
             Image.fromarray(image, mode="RGB")
             .convert("L")
@@ -152,17 +186,33 @@ class DirectionalFlowEstimator:
             dtype=np.float32,
         ) / 255.0
         grad_y, grad_x = np.gradient(gray)
-        along_gradient = grad_x * dx + grad_y * dy
+        along_gradient = grad_x * direction_x + grad_y * direction_y
         scale = float(np.percentile(np.abs(along_gradient[mask > 0.1]), 90)) if np.any(mask > 0.1) else 0.0
         if scale > 1e-6:
             variation = np.clip(along_gradient / scale, -1.0, 1.0) * self.variation
         else:
             variation = np.zeros_like(mask, dtype=np.float32)
         flow = np.zeros((*mask.shape, 2), dtype=np.float32)
-        flow[..., 0] = float(dx) - float(dy) * variation
-        flow[..., 1] = float(dy) + float(dx) * variation
+        flow[..., 0] = direction_x - direction_y * variation
+        flow[..., 1] = direction_y + direction_x * variation
         flow_length = np.maximum(np.linalg.norm(flow, axis=-1, keepdims=True), 1e-6)
         flow /= flow_length
+        edge_strength = np.hypot(grad_x, grad_y)
+        selected_edges = edge_strength[mask > 0.1]
+        edge_scale = (
+            float(np.percentile(selected_edges, 90))
+            if selected_edges.size
+            else 0.0
+        )
+        if edge_scale > 1e-6:
+            obstacle_factor = 1.0 - 0.45 * np.clip(
+                edge_strength / edge_scale, 0.0, 1.0
+            )
+        else:
+            obstacle_factor = np.ones_like(mask, dtype=np.float32)
+        speed = np.clip((0.2 + mask * 0.8) * obstacle_factor, 0.0, 1.0)
+        speed[mask <= 0.01] = 0.0
+        flow *= speed[..., None]
         return flow
 
 
@@ -251,6 +301,7 @@ class PreparationPipeline:
         effect_type: str,
         seed: int,
         direction: tuple[float, float] | None = None,
+        guides: list[dict[str, list[float]]] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EffectAssets:
         rgb = _rgb_array(image)
@@ -258,7 +309,10 @@ class PreparationPipeline:
         rough = _mask_array(rough_mask, size)
         mask = self.mask_refiner.refine(rgb, rough)
         depth = self.depth_estimator.estimate(rgb, mask)
-        flow = self.flow_estimator.estimate(rgb, mask, direction=direction)
+        flow_kwargs: dict[str, Any] = {"direction": direction}
+        if guides:
+            flow_kwargs["guides"] = guides
+        flow = self.flow_estimator.estimate(rgb, mask, **flow_kwargs)
         style = self.style_analyzer.analyze(rgb, mask)
         textures = self.texture_generator.generate(rgb, mask, effect_type, int(seed), style)
 
@@ -274,6 +328,8 @@ class PreparationPipeline:
         preparation_metadata.update(metadata or {})
         if direction is not None:
             preparation_metadata["direction"] = [float(direction[0]), float(direction[1])]
+        if guides:
+            preparation_metadata["flow_guides"] = guides
 
         return EffectAssets(
             effect_type=effect_type,

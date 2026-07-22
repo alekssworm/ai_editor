@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QImage, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -15,7 +17,11 @@ from PySide6.QtWidgets import (
 )
 
 from backend_async import run_in_thread
-from effect_engine.preview import PreviewResult, build_project_preview
+from effect_engine.preview import (
+    PreviewResult,
+    build_project_preview,
+    export_project_loop,
+)
 
 
 def _to_qimage(frame: Image.Image) -> QImage:
@@ -31,7 +37,14 @@ def _to_qimage(frame: Image.Image) -> QImage:
 
 
 class EffectPreviewDialog(QDialog):
-    def __init__(self, result: PreviewResult, parent=None) -> None:
+    def __init__(
+        self,
+        result: PreviewResult,
+        parent=None,
+        *,
+        export_callback: Callable[[str], Path] | None = None,
+        default_export_path: str | Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Effect preview — shape {result.shape_id}")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -40,6 +53,9 @@ class EffectPreviewDialog(QDialog):
         self._frames = [_to_qimage(frame) for frame in result.frames]
         self._frame_index = 0
         self._playing = True
+        self._export_callback = export_callback
+        self._default_export_path = str(default_export_path or "effect_loop.mp4")
+        self._export_running = False
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -54,12 +70,19 @@ class EffectPreviewDialog(QDialog):
 
         self.play_button = QPushButton("Pause")
         self.play_button.clicked.connect(self._toggle_playback)
+        self.export_button = QPushButton("Export MP4 (24 fps)")
+        self.export_button.setToolTip(
+            "Full-resolution deterministic export: 72 frames, H.264 CRF 18"
+        )
+        self.export_button.clicked.connect(self._export_mp4)
+        self.export_button.setVisible(export_callback is not None)
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.close)
 
         controls = QHBoxLayout()
         controls.addWidget(self.status_label)
         controls.addStretch(1)
+        controls.addWidget(self.export_button)
         controls.addWidget(self.play_button)
         controls.addWidget(close_button)
 
@@ -100,11 +123,59 @@ class EffectPreviewDialog(QDialog):
             self._timer.stop()
             self.play_button.setText("Play")
 
+    def _export_mp4(self) -> None:
+        if self._export_callback is None or self._export_running:
+            return
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export deterministic loop",
+            self._default_export_path,
+            "MP4 video (*.mp4)",
+        )
+        if not output_path:
+            return
+        if not output_path.lower().endswith(".mp4"):
+            output_path += ".mp4"
+
+        self._export_running = True
+        self.export_button.setEnabled(False)
+        self.export_button.setText("Exporting 72 frames...")
+        self.status_label.setText("Rendering full-resolution deterministic loop...")
+
+        def on_ready(result_path: Path) -> None:
+            self._export_running = False
+            self.export_button.setEnabled(True)
+            self.export_button.setText("Export MP4 (24 fps)")
+            self.status_label.setText(f"Export complete: {result_path}")
+            QMessageBox.information(
+                self,
+                "Export complete",
+                f"Video saved:\n{result_path}",
+            )
+
+        def on_error(message: str) -> None:
+            self._export_running = False
+            self.export_button.setEnabled(True)
+            self.export_button.setText("Export MP4 (24 fps)")
+            self.status_label.setText("Export failed")
+            QMessageBox.critical(self, "Export error", str(message))
+
+        run_in_thread(
+            self,
+            self._export_callback,
+            on_ready,
+            on_error,
+            output_path,
+        )
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._show_current_frame()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._export_running:
+            event.ignore()
+            return
         self._timer.stop()
         super().closeEvent(event)
 
@@ -175,7 +246,28 @@ def start_effect_preview(window) -> None:
                 previous.close()
             except RuntimeError:
                 pass
-        dialog = EffectPreviewDialog(result, window)
+        def export_callback(output_path: str) -> Path:
+            return export_project_loop(
+                project_path,
+                shape_id,
+                output_path,
+                card_override=card_override,
+                direction_override=direction_override,
+                frame_count=72,
+                fps=24,
+                crf=18,
+                seed=shape_id,
+            )
+
+        default_export_path = Path(project_path).with_name(
+            "result_deterministic.mp4"
+        )
+        dialog = EffectPreviewDialog(
+            result,
+            window,
+            export_callback=export_callback,
+            default_export_path=default_export_path,
+        )
         window._effect_preview_dialog = dialog
 
         def clear_dialog_reference() -> None:

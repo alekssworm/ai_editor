@@ -77,6 +77,47 @@ def project_flow_direction(
     return None
 
 
+def normalize_flow_guide(value: Any) -> dict[str, list[float]] | None:
+    if not isinstance(value, Mapping):
+        return None
+    start = value.get("start")
+    end = value.get("end")
+
+    def point(raw):
+        if isinstance(raw, Mapping):
+            raw = (raw.get("x"), raw.get("y"))
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)) or len(raw) < 2:
+            return None
+        try:
+            x, y = float(raw[0]), float(raw[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        return [x, y]
+
+    start_point, end_point = point(start), point(end)
+    if start_point is None or end_point is None:
+        return None
+    if math.hypot(
+        end_point[0] - start_point[0], end_point[1] - start_point[1]
+    ) < 1e-6:
+        return None
+    return {"start": start_point, "end": end_point}
+
+
+def project_flow_guides(
+    project: Mapping[str, Any], shape_id: int
+) -> list[dict[str, list[float]]]:
+    collection = project.get("flow_guides") or {}
+    if not isinstance(collection, Mapping):
+        return []
+    raw_guides = collection.get(str(int(shape_id)), collection.get(int(shape_id), []))
+    if not isinstance(raw_guides, Sequence) or isinstance(raw_guides, (str, bytes)):
+        return []
+    return [guide for raw in raw_guides if (guide := normalize_flow_guide(raw))]
+
+
 def serialize_flow_directions(
     directions: Mapping[Any, Any], shape_ids: Iterable[int]
 ) -> dict[str, dict[str, float]]:
@@ -87,6 +128,23 @@ def serialize_flow_directions(
         direction = normalize_direction(value)
         if direction is not None:
             result[str(shape_id)] = {"x": direction[0], "y": direction[1]}
+    return result
+
+
+def serialize_flow_guides(
+    guides: Mapping[Any, Any], shape_ids: Iterable[int]
+) -> dict[str, list[dict[str, list[float]]]]:
+    result: dict[str, list[dict[str, list[float]]]] = {}
+    for raw_shape_id in shape_ids:
+        shape_id = int(raw_shape_id)
+        raw_guides = guides.get(shape_id, guides.get(str(shape_id), []))
+        if not isinstance(raw_guides, Sequence) or isinstance(raw_guides, (str, bytes)):
+            continue
+        normalized = [
+            guide for raw in raw_guides if (guide := normalize_flow_guide(raw))
+        ]
+        if normalized:
+            result[str(shape_id)] = normalized
     return result
 
 
@@ -196,6 +254,7 @@ def prepare_project_shape(
     resolved_direction = normalize_direction(direction)
     if resolved_direction is None:
         resolved_direction = project_flow_direction(project, requested_id)
+    guides = project_flow_guides(project, requested_id)
 
     preparer = pipeline or PreparationPipeline()
     assets = preparer.prepare(
@@ -204,6 +263,7 @@ def prepare_project_shape(
         effect_type=resolved_effect,
         seed=int(seed),
         direction=resolved_direction,
+        guides=guides or None,
         metadata={
             "project": path.name,
             "shape_id": requested_id,

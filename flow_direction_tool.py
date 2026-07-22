@@ -61,8 +61,10 @@ class FlowDirectionController(QObject):
         self.viewport = window.ui.graphicsView.viewport()
         self.viewport.installEventFilter(self)
         self._arrow: FlowArrowItem | None = None
+        self._guide_arrows: list[FlowArrowItem] = []
         self._active = False
         self._dragging = False
+        self._append_mode = False
         self._shape_id: int | None = None
         self._drag_start = QPointF()
         self._button_text = window.ui.settings.text()
@@ -89,13 +91,14 @@ class FlowDirectionController(QObject):
 
     def _remove_arrow(self) -> None:
         arrow, self._arrow = self._arrow, None
-        if arrow is None:
-            return
-        try:
-            if arrow.scene() is not None:
-                arrow.scene().removeItem(arrow)
-        except RuntimeError:
-            pass
+        arrows = ([arrow] if arrow is not None else []) + self._guide_arrows
+        self._guide_arrows = []
+        for current in arrows:
+            try:
+                if current.scene() is not None:
+                    current.scene().removeItem(current)
+            except RuntimeError:
+                pass
 
     @staticmethod
     def _display_length(item: QGraphicsItem) -> float:
@@ -112,16 +115,38 @@ class FlowDirectionController(QObject):
         end = center + QPointF(direction[0] * length, direction[1] * length)
         self._ensure_arrow().set_line(center, end)
 
-    def set_direction(self, shape_id: int, direction) -> bool:
+    def _show_saved_flow(self, shape_id: int, item: QGraphicsItem) -> None:
+        self._remove_arrow()
+        guides = getattr(self.window, "flow_guides", {}).get(int(shape_id), [])
+        for guide in guides:
+            try:
+                start = QPointF(float(guide["start"][0]), float(guide["start"][1]))
+                end = QPointF(float(guide["end"][0]), float(guide["end"][1]))
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            arrow = FlowArrowItem()
+            arrow.set_line(start, end)
+            self.window.scene.addItem(arrow)
+            self._guide_arrows.append(arrow)
+        if not self._guide_arrows:
+            direction = normalize_direction(
+                self.window.flow_directions.get(int(shape_id))
+            )
+            if direction is not None:
+                self._show_direction(item, direction)
+
+    def set_direction(self, shape_id: int, direction, *, preserve_guides=False) -> bool:
         normalized = normalize_direction(direction)
         item = self.window.shape_registry.get(int(shape_id))
         if normalized is None or item is None:
             return False
         self.window.flow_directions[int(shape_id)] = normalized
+        if not preserve_guides:
+            getattr(self.window, "flow_guides", {}).pop(int(shape_id), None)
         ai_window = getattr(self.window, "ai_window", None)
         if ai_window is not None:
             ai_window.set_shape_direction(shape_id, normalized)
-        self._show_direction(item, normalized)
+        self._show_saved_flow(int(shape_id), item)
         return True
 
     def toggle(self) -> None:
@@ -147,10 +172,11 @@ class FlowDirectionController(QObject):
         self.viewport.setCursor(Qt.CursorShape.CrossCursor)
         self.viewport.setFocus()
         self.window.ui.settings.setText("cancel flow")
-        direction = self.window.flow_directions.get(shape_id, (1.0, 0.0))
-        self._show_direction(item, direction)
+        if shape_id not in self.window.flow_directions:
+            self.window.flow_directions[shape_id] = (1.0, 0.0)
+        self._show_saved_flow(shape_id, item)
         self.window.statusBar().showMessage(
-            "Зажмите левую кнопку и проведите внутри области по направлению потока; Esc — отмена",
+            "Drag to set flow. Hold Shift and drag again to add local flow guides; Esc cancels.",
             8000,
         )
 
@@ -184,7 +210,7 @@ class FlowDirectionController(QObject):
         direction = self.window.flow_directions.get(selected_id)
         normalized = normalize_direction(direction)
         if normalized is not None:
-            self._show_direction(item, normalized)
+            self._show_saved_flow(selected_id, item)
 
     def _scene_position(self, event) -> QPointF:
         return self.window.ui.graphicsView.mapToScene(event.position().toPoint())
@@ -197,14 +223,38 @@ class FlowDirectionController(QObject):
         dx = end.x() - self._drag_start.x()
         dy = end.y() - self._drag_start.y()
         if math.hypot(dx, dy) >= 3.0 and self._shape_id is not None:
-            self.set_direction(self._shape_id, (dx, dy))
-            self.window.statusBar().showMessage("Направление потока сохранено", 3000)
-        self._active = False
+            shape_id = int(self._shape_id)
+            guide = {
+                "start": [float(self._drag_start.x()), float(self._drag_start.y())],
+                "end": [float(end.x()), float(end.y())],
+            }
+            if not hasattr(self.window, "flow_guides"):
+                self.window.flow_guides = {}
+            guides = list(self.window.flow_guides.get(shape_id, []))
+            guides = guides + [guide] if self._append_mode else [guide]
+            self.window.flow_guides[shape_id] = guides[-8:]
+            average_x = sum(
+                item["end"][0] - item["start"][0] for item in guides[-8:]
+            )
+            average_y = sum(
+                item["end"][1] - item["start"][1] for item in guides[-8:]
+            )
+            self.set_direction(
+                shape_id,
+                (average_x, average_y),
+                preserve_guides=True,
+            )
+            self.window.statusBar().showMessage(
+                f"Flow saved: {len(self.window.flow_guides[shape_id])} guide(s). "
+                "Shift+drag adds another; Esc or the Flow button finishes.",
+                8000,
+            )
+        else:
+            item = self.window.shape_registry.get(self._shape_id)
+            if item is not None and self._shape_id is not None:
+                self._show_saved_flow(int(self._shape_id), item)
         self._dragging = False
-        self._shape_id = None
-        self.viewport.unsetCursor()
-        self.window.ui.settings.setText(self._button_text)
-        self.refresh_for_selection()
+        self._append_mode = False
 
     def eventFilter(self, watched, event) -> bool:
         if watched is not self.viewport or not self._active:
@@ -223,6 +273,9 @@ class FlowDirectionController(QObject):
                 if self._point_in_target(point):
                     self._drag_start = point
                     self._dragging = True
+                    self._append_mode = bool(
+                        event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                    )
                     self._ensure_arrow().set_line(point, point)
                 return True
         if event_type == QEvent.Type.MouseMove and self._dragging:

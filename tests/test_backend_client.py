@@ -9,6 +9,23 @@ import backend_client
 
 
 class BackendClientTests(unittest.TestCase):
+    def test_render_request_uses_smooth_hq_output_defaults(self) -> None:
+        with patch.object(
+            backend_client,
+            "_req",
+            return_value={"job_id": "hq-job"},
+        ) as request:
+            job_id = backend_client.start_svd_render(
+                "H:/project/shapes.json",
+                "H:/project/result.mp4",
+            )
+
+        payload = request.call_args.kwargs["json_body"]
+        self.assertEqual(job_id, "hq-job")
+        self.assertEqual(payload["output_fps"], 24)
+        self.assertEqual(payload["output_frames"], 72)
+        self.assertEqual(payload["crf"], 18)
+
     def test_connection_error_becomes_actionable_message(self) -> None:
         raw_error = requests.ConnectionError("HTTPConnectionPool raw details")
         with patch.object(backend_client._session, "request", side_effect=raw_error):

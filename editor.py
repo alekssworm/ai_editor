@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self.shape_registry = {}  # {id: QGraphicsItem}
         self.shape_id_counter = 1
         self.flow_directions = {}  # {shape_id: normalized (x, y)}
+        self.flow_guides = {}  # {shape_id: [{start: [x,y], end: [x,y]}]}
 
         # Кнопки UI
         self.ui.tools_Button.clicked.connect(lambda: toggle_tools_panel(self))
@@ -161,7 +162,13 @@ class MainWindow(QMainWindow):
         direction = normalize_direction((motion or {}).get("direction"))
         if direction is None or int(shape_id) not in self.shape_registry:
             return
-        self.flow_directions[int(shape_id)] = direction
+        shape_id = int(shape_id)
+        previous = normalize_direction(self.flow_directions.get(shape_id))
+        if previous is not None and any(
+            abs(previous[index] - direction[index]) > 1e-6 for index in (0, 1)
+        ):
+            self.flow_guides.pop(shape_id, None)
+        self.flow_directions[shape_id] = direction
         self.flow_direction_controller.refresh_for_selection()
 
     def _sync_current_project(self):

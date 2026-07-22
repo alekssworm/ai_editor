@@ -50,6 +50,39 @@ class EffectPreviewDialogTests(unittest.TestCase):
             dialog.close()
             self.assertFalse(dialog._timer.isActive())
 
+    def test_dialog_hq_export_uses_selected_mp4_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "final.mp4"
+            callback = Mock(return_value=output)
+            result = PreviewResult(
+                frames=[Image.new("RGB", (16, 12), "blue") for _ in range(2)],
+                assets_dir=Path(directory),
+                effect_type="water",
+                shape_id=2,
+                fps=12,
+                params={"strength": 2.0},
+            )
+            dialog = EffectPreviewDialog(result, export_callback=callback)
+
+            def run_now(_owner, function, on_ok, _on_error, *args, **kwargs):
+                on_ok(function(*args, **kwargs))
+
+            with (
+                patch(
+                    "effect_preview.QFileDialog.getSaveFileName",
+                    return_value=(str(output), "MP4 video (*.mp4)"),
+                ),
+                patch("effect_preview.run_in_thread", side_effect=run_now),
+                patch("effect_preview.QMessageBox.information") as information,
+            ):
+                dialog._export_mp4()
+
+            callback.assert_called_once_with(str(output))
+            self.assertIn("Export complete", dialog.status_label.text())
+            self.assertTrue(dialog.export_button.isEnabled())
+            information.assert_called_once()
+            dialog.close()
+
     def test_main_window_constructs_with_preview_button(self) -> None:
         from editor import MainWindow
 
@@ -118,6 +151,24 @@ class EffectPreviewDialogTests(unittest.TestCase):
         )
         self.assertFalse(panel.render_progress_bar.isHidden())
         self.assertEqual(panel.render_progress_bar.value(), 7)
+        window.close()
+
+    def test_render_status_names_loop_interpolation(self) -> None:
+        from editor import MainWindow
+
+        window = MainWindow()
+        window.ai_window._handle_svd_status(
+            {
+                "state": "running",
+                "progress": {
+                    "stage": "interpolating",
+                    "current": 25,
+                    "total": 72,
+                },
+            }
+        )
+
+        self.assertIn("сглаживание движения", window.ai_window.statusBar().currentMessage())
         window.close()
 
     def test_cancelled_render_restores_render_button(self) -> None:
@@ -324,6 +375,12 @@ class EffectPreviewDialogTests(unittest.TestCase):
         card = window.ai_window.collect_shape_cards_data()[0]
         self.assertEqual(card["preset_id"], "still_water")
         self.assertEqual(card["main"]["key"], "main_Still_water")
+        graphics_widget = window.ai_window.shape_cards[22]
+        shape_card = graphics_widget.layout().itemAt(0).widget()
+        self.assertEqual(shape_card.motion_controls.strength_spin.value(), 2)
+        self.assertEqual(shape_card.motion_controls.cycles_spin.value(), 1)
+        self.assertEqual(shape_card.motion_controls.strength_spin.maximum(), 4)
+        self.assertEqual(shape_card.motion_controls.cycles_spin.maximum(), 2)
         window.close()
 
     def test_shape_card_position_round_trips_and_effect_can_be_reset(self) -> None:
@@ -415,6 +472,34 @@ class EffectPreviewDialogTests(unittest.TestCase):
         direction = window.flow_directions[12]
         self.assertAlmostEqual(direction[0], 1.0)
         self.assertAlmostEqual(direction[1], 0.0)
+        self.assertEqual(len(window.flow_guides[12]), 1)
+        guide = window.flow_guides[12][0]
+        self.assertAlmostEqual(guide["start"][0], 40.0, delta=0.2)
+        self.assertAlmostEqual(guide["start"][1], 40.0, delta=0.2)
+        self.assertAlmostEqual(guide["end"][0], 110.0, delta=0.2)
+        self.assertAlmostEqual(guide["end"][1], 40.0, delta=0.2)
+        self.assertTrue(window.flow_direction_controller.active)
+
+        second_start = window.ui.graphicsView.mapFromScene(QPointF(70, 30))
+        second_end = window.ui.graphicsView.mapFromScene(QPointF(70, 70))
+        QTest.mousePress(
+            window.ui.graphicsView.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ShiftModifier,
+            second_start,
+        )
+        QTest.mouseMove(window.ui.graphicsView.viewport(), second_end, delay=5)
+        QTest.mouseRelease(
+            window.ui.graphicsView.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ShiftModifier,
+            second_end,
+        )
+        self.app.processEvents()
+
+        self.assertEqual(len(window.flow_guides[12]), 2)
+        self.assertGreater(window.flow_directions[12][1], 0.0)
+        window.flow_direction_controller.cancel()
         self.assertFalse(window.flow_direction_controller.active)
         window.close()
 

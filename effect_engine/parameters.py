@@ -26,6 +26,62 @@ _OPACITY_LEVELS = {
     "strong": 1.0,
 }
 
+_MOTION_PROFILES = {
+    "still_water": {
+        "recommended_strength": 2.0,
+        "max_strength": 4.0,
+        "recommended_cycles": 1,
+        "max_cycles": 2,
+    },
+    "river": {
+        "recommended_strength": 4.0,
+        "max_strength": 10.0,
+        "recommended_cycles": 1,
+        "max_cycles": 3,
+    },
+    "fast_river": {
+        "recommended_strength": 7.0,
+        "max_strength": 12.0,
+        "recommended_cycles": 2,
+        "max_cycles": 3,
+    },
+    "waterfall": {
+        "recommended_strength": 8.0,
+        "max_strength": 14.0,
+        "recommended_cycles": 2,
+        "max_cycles": 3,
+    },
+}
+
+
+def motion_profile_from_card(
+    card: Mapping[str, Any] | None,
+    *,
+    effect_type: str | None = None,
+    preset_id: str | None = None,
+    registry: PresetRegistry | None = None,
+) -> dict[str, float]:
+    resolved_effect = str(
+        effect_type or (card or {}).get("tool_type") or "water"
+    ).lower()
+    preset = resolve_card_preset(
+        card,
+        resolved_effect,
+        preset_id=preset_id,
+        registry=registry,
+    )
+    key = preset.preset_id if preset is not None else ""
+    profile = _MOTION_PROFILES.get(
+        key,
+        {
+            "recommended_strength": 4.0,
+            "max_strength": 20.0,
+            "recommended_cycles": 1,
+            "max_cycles": 4,
+        },
+    )
+    return dict(profile)
+
 
 def _main_params(card: Mapping[str, Any] | None) -> dict[str, Any]:
     main = (card or {}).get("main") or {}
@@ -90,4 +146,15 @@ def renderer_params_from_card(
             result["cycles"] = float(min(8, max(1, cycles)))
         except (TypeError, ValueError):
             pass
+    profile = motion_profile_from_card(
+        card,
+        effect_type=resolved_effect,
+        preset_id=preset.preset_id if preset is not None else preset_id,
+        registry=registry,
+    )
+    result["strength"] = min(result.get("strength", 4.0), profile["max_strength"])
+    if "cycles" in result:
+        result["cycles"] = float(
+            min(int(result["cycles"]), int(profile["max_cycles"]))
+        )
     return result

@@ -137,3 +137,50 @@ def build_project_preview(
         params=params,
         preset_id=preset.preset_id if preset is not None else None,
     )
+
+
+def export_project_loop(
+    project_path: str | Path,
+    shape_id: int,
+    output_path: str | Path,
+    *,
+    card_override: Mapping[str, Any] | None = None,
+    direction_override: tuple[float, float] | None = None,
+    frame_count: int = 72,
+    fps: int = 24,
+    crf: int = 18,
+    seed: int = 1,
+) -> Path:
+    """Render a full-resolution deterministic loop directly to an H.264 file."""
+    path, project = load_project(project_path)
+    card = (
+        dict(card_override)
+        if card_override is not None
+        else find_shape_card(project, int(shape_id))
+    )
+    effect_type = str(card.get("tool_type") or "water").strip().lower()
+    if effect_type != "water":
+        raise ValueError("Deterministic export currently supports only the water tool")
+    preset = resolve_card_preset(card, effect_type)
+    assets, _ = prepare_project_shape(
+        path,
+        shape_id,
+        effect_type=effect_type,
+        preset_id=preset.preset_id if preset is not None else None,
+        card_override=card,
+        seed=seed,
+        direction=direction_override,
+    )
+    background_path = resolve_background_path(path, project)
+    with Image.open(background_path) as source:
+        image = source.convert("RGB")
+    params = renderer_params_from_card(card)
+    return DeterministicEffectEngine().export_mp4(
+        image,
+        assets,
+        output_path,
+        frame_count=frame_count,
+        fps=fps,
+        crf=crf,
+        params=params,
+    )

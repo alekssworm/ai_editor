@@ -33,6 +33,7 @@ def import_image(self):
         self.shape_registry.clear()
         self.shape_parents.clear()
         self.flow_directions.clear()
+        self.flow_guides.clear()
         self.shape_id_counter = 1
         self.ui.listWidget.clear()
         self.current_project_folder = None

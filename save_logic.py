@@ -4,7 +4,11 @@ from PySide6.QtWidgets import QFileDialog, QGraphicsPixmapItem, QMessageBox
 from PySide6.QtGui import QImage, QPainter, Qt, QPainterPath
 from draw_tools import SelectableCircleItem, ResizableRectItem, ShapeItem
 from draw_tools import SelectablePolygonItem
-from effect_engine.project import PROJECT_SCHEMA_VERSION, serialize_flow_directions
+from effect_engine.project import (
+    PROJECT_SCHEMA_VERSION,
+    serialize_flow_directions,
+    serialize_flow_guides,
+)
 
 
 def _shape_scene_rect(item):
@@ -463,6 +467,9 @@ def _save_outputs_impl(self, folder=None):
         if motion.get("direction") is not None:
             directions_for_save[card_id] = motion["direction"]
     flow_directions = serialize_flow_directions(directions_for_save, valid_ids)
+    flow_guides = serialize_flow_guides(
+        getattr(self, "flow_guides", {}), valid_ids
+    )
     _write_json_atomic(
         project_path,
         {
@@ -471,6 +478,7 @@ def _save_outputs_impl(self, folder=None):
             "shapes": shape_data,
             "shape_cards": filtered_cards,
             "flow_directions": flow_directions,
+            "flow_guides": flow_guides,
         },
     )
 

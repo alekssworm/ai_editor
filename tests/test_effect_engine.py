@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -18,7 +19,9 @@ from effect_engine.project import (
     normalize_direction,
     prepare_project_shape,
     project_flow_direction,
+    project_flow_guides,
     serialize_flow_directions,
+    serialize_flow_guides,
 )
 from effect_engine.renderer import DeterministicEffectEngine
 from effect_engine.storage import EffectAssetStore
@@ -142,13 +145,17 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(assets.metadata["renderer_params"]["strength"], 4.5)
             self.assertTrue((target / "manifest.json").exists())
             self.assertGreater(float(assets.mask.max()), 0.9)
-            np.testing.assert_allclose(
-                np.linalg.norm(assets.flow, axis=-1), 1.0, atol=1e-5
-            )
+            flow_speed = np.linalg.norm(assets.flow, axis=-1)
+            self.assertTrue(np.all(flow_speed <= 1.0 + 1e-5))
+            self.assertGreater(float(flow_speed[assets.mask > 0.5].mean()), 0.5)
+            self.assertEqual(float(flow_speed[assets.mask <= 0.01].max()), 0.0)
+            normalized_flow = assets.flow / np.maximum(flow_speed[..., None], 1e-6)
             self.assertAlmostEqual(
-                float(assets.flow[..., 0].mean()), 0.0, delta=0.08
+                float(normalized_flow[assets.mask > 0.5, 0].mean()), 0.0, delta=0.08
             )
-            self.assertLess(float(assets.flow[..., 1].mean()), -0.95)
+            self.assertLess(
+                float(normalized_flow[assets.mask > 0.5, 1].mean()), -0.95
+            )
             self.assertGreater(float(assets.depth.std()), 0.001)
 
     def test_flow_direction_round_trip_and_project_lookup(self) -> None:
@@ -162,6 +169,36 @@ class EffectEngineTests(unittest.TestCase):
         self.assertNotIn("9", serialized)
         self.assertEqual(project_flow_direction(project, 5), (0.0, -1.0))
         self.assertIsNone(normalize_direction({"x": "bad", "y": 1}))
+
+    def test_flow_guides_round_trip_and_steer_local_regions(self) -> None:
+        serialized = serialize_flow_guides(
+            {
+                4: [
+                    {"start": [12, 12], "end": [12, 28]},
+                    {"start": {"x": 36, "y": 28}, "end": {"x": 36, "y": 12}},
+                    {"start": [1, 1], "end": [1, 1]},
+                ]
+            },
+            {4},
+        )
+        project = {"flow_guides": serialized}
+
+        self.assertEqual(len(serialized["4"]), 2)
+        self.assertEqual(project_flow_guides(project, 4), serialized["4"])
+
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=10,
+            direction=(1.0, 0.0),
+            guides=serialized["4"],
+        )
+        speed = np.maximum(np.linalg.norm(assets.flow, axis=-1), 1e-6)
+        direction = assets.flow / speed[..., None]
+        self.assertGreater(float(direction[18, 12, 1]), 0.2)
+        self.assertLess(float(direction[18, 36, 1]), -0.2)
+        self.assertEqual(assets.metadata["flow_guides"], serialized["4"])
 
     def test_water_card_settings_are_mapped_to_renderer_params(self) -> None:
         card = {
@@ -194,6 +231,18 @@ class EffectEngineTests(unittest.TestCase):
 
         self.assertEqual(params["strength"], 9.0)
         self.assertEqual(params["cycles"], 3.0)
+
+    def test_motion_profile_caps_values_that_create_rubbery_water(self) -> None:
+        params = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "motion": {"strength": 20, "cycles": 8},
+            }
+        )
+
+        self.assertEqual(params["strength"], 4.0)
+        self.assertEqual(params["cycles"], 2.0)
 
     def test_builtin_presets_support_ids_aliases_and_defaults(self) -> None:
         registry = default_preset_registry()
@@ -312,14 +361,60 @@ class EffectEngineTests(unittest.TestCase):
             self.assertEqual(result.params["opacity"], 1.0)
             self.assertEqual(result.preset_id, "river")
             self.assertEqual(stored.metadata["preset_id"], "river")
-            np.testing.assert_allclose(
-                np.linalg.norm(stored.flow, axis=-1), 1.0, atol=1e-5
-            )
+            flow_speed = np.linalg.norm(stored.flow, axis=-1)
+            normalized_flow = stored.flow / np.maximum(flow_speed[..., None], 1e-6)
+            self.assertGreater(float(flow_speed[stored.mask > 0.5].mean()), 0.5)
+            self.assertEqual(float(flow_speed[stored.mask <= 0.01].max()), 0.0)
             self.assertAlmostEqual(
-                float(stored.flow[..., 0].mean()), 0.0, delta=0.08
+                float(normalized_flow[stored.mask > 0.5, 0].mean()), 0.0, delta=0.08
             )
-            self.assertLess(float(stored.flow[..., 1].mean()), -0.95)
+            self.assertLess(
+                float(normalized_flow[stored.mask > 0.5, 1].mean()), -0.95
+            )
             self.assertEqual(stored.metadata["direction"], [0.0, -1.0])
+
+    def test_mp4_export_streams_hq_frames_without_duplicate_endpoint(self) -> None:
+        class DummyWriter:
+            def __init__(self, path: Path) -> None:
+                path.touch()
+                self.frames = []
+                self.closed = False
+
+            def append_data(self, frame) -> None:
+                self.frames.append(frame.copy())
+
+            def close(self) -> None:
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "loop.mp4"
+            writer = None
+            writer_kwargs = {}
+
+            def fake_writer(path, **kwargs):
+                nonlocal writer, writer_kwargs
+                writer_kwargs = kwargs
+                writer = DummyWriter(Path(path))
+                return writer
+
+            with patch("effect_engine.renderer.imageio.get_writer", side_effect=fake_writer):
+                result = DeterministicEffectEngine().export_mp4(
+                    self.image,
+                    self.prepare(),
+                    output,
+                    frame_count=6,
+                    fps=24,
+                    crf=17,
+                )
+
+            self.assertEqual(result, output)
+            self.assertTrue(output.exists())
+            self.assertIsNotNone(writer)
+            self.assertEqual(len(writer.frames), 6)
+            self.assertFalse(np.array_equal(writer.frames[0], writer.frames[-1]))
+            self.assertTrue(writer.closed)
+            self.assertEqual(writer_kwargs["fps"], 24)
+            self.assertIn("17", writer_kwargs["ffmpeg_params"])
 
 
 if __name__ == "__main__":

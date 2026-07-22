@@ -583,6 +583,51 @@ class MotionSettingsWidget(QFrame):
         layout.addLayout(row)
         return slider, spin
 
+    def apply_profile(self, profile):
+        """Apply effect-safe motion ranges without discarding saved direction."""
+        max_strength = max(1, round(float(profile.get("max_strength", 20))))
+        max_cycles = max(1, round(float(profile.get("max_cycles", 4))))
+        recommended_strength = max(
+            1,
+            min(
+                max_strength,
+                round(float(profile.get("recommended_strength", 4))),
+            ),
+        )
+        recommended_cycles = max(
+            1,
+            min(
+                max_cycles,
+                round(float(profile.get("recommended_cycles", 1))),
+            ),
+        )
+        was_configured = self._configured
+        previous = (self.strength_spin.value(), self.cycles_spin.value())
+        self._loading = True
+        try:
+            for control in (self.strength_slider, self.strength_spin):
+                control.setMaximum(max_strength)
+            for control in (self.cycles_slider, self.cycles_spin):
+                control.setMaximum(max_cycles)
+            if was_configured:
+                self.strength_spin.setValue(min(previous[0], max_strength))
+                self.cycles_spin.setValue(min(previous[1], max_cycles))
+            else:
+                self.strength_spin.setValue(recommended_strength)
+                self.cycles_spin.setValue(recommended_cycles)
+        finally:
+            self._loading = False
+        self._configured = was_configured
+        self.strength_spin.setToolTip(
+            f"Recommended {recommended_strength} px; safe maximum {max_strength} px"
+        )
+        self.cycles_spin.setToolTip(
+            f"Recommended {recommended_cycles}; safe maximum {max_cycles} loop cycles"
+        )
+        current = (self.strength_spin.value(), self.cycles_spin.value())
+        if was_configured and current != previous:
+            self.changed.emit()
+
     @property
     def configured(self):
         return self._configured
@@ -1209,6 +1254,18 @@ class AIWindow(QMainWindow):
                 return
             shape_card.main_function_added = True
             print(f"[DEBUG] [OK] Добавлена главная функция: {button_text}")
+            try:
+                from effect_engine.parameters import motion_profile_from_card
+
+                profile = motion_profile_from_card(
+                    {
+                        "tool_type": tool_type,
+                        "main": {"key": button_name, "name": button_text},
+                    }
+                )
+                shape_card.motion_controls.apply_profile(profile)
+            except (KeyError, ValueError):
+                pass
         elif is_sub:
             if button_name in shape_card.added_subfunctions:
                 print(f"[DEBUG] [WARN] Саб-функция уже добавлена: {button_text} ({button_name})")
@@ -1753,6 +1810,7 @@ class AIWindow(QMainWindow):
             "rendering": "генерация кадров",
             "decoding": "декодирование кадров",
             "postprocessing": "постобработка",
+            "interpolating": "сглаживание движения",
             "encoding": "сохранение MP4",
             "done": "готово",
         }
@@ -1761,7 +1819,8 @@ class AIWindow(QMainWindow):
         if step is not None and steps:
             stage_text += f" {step}/{steps}"
         if current is not None and total and int(total) > 1:
-            stage_text += f" • слой {current}/{total}"
+            unit = "кадр" if stage in {"interpolating", "encoding"} else "слой"
+            stage_text += f" • {unit} {current}/{total}"
         status_text = f"AI: {stage_text} • {elapsed_text}"
         self._set_render_status(status_text)
 
@@ -1770,6 +1829,10 @@ class AIWindow(QMainWindow):
             if step is not None and steps:
                 self.render_progress_bar.setRange(0, int(steps))
                 self.render_progress_bar.setValue(int(step))
+                self.render_progress_bar.setFormat(f"{base_stage_text} — %v/%m")
+            elif current is not None and total and int(total) > 1:
+                self.render_progress_bar.setRange(0, int(total))
+                self.render_progress_bar.setValue(int(current))
                 self.render_progress_bar.setFormat(f"{base_stage_text} — %v/%m")
             else:
                 self.render_progress_bar.setRange(0, 0)

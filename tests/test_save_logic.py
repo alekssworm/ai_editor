@@ -35,6 +35,10 @@ class SaveLogicTests(unittest.TestCase):
             shape = ResizableRectItem(QRectF(4, 5, 24, 18), QColor("#00aaff"))
             window.scene.addItem(shape)
             window.shape_registry[1] = shape
+            window.flow_directions[1] = (1.0, 0.0)
+            window.flow_guides[1] = [
+                {"start": [5.0, 10.0], "end": [25.0, 10.0]}
+            ]
             window.current_project_folder = directory
 
             with (
@@ -53,6 +57,11 @@ class SaveLogicTests(unittest.TestCase):
             self.assertFalse(list(Path(directory).rglob("*.tmp.png")))
             project = json.loads(project_path.read_text(encoding="utf-8"))
             self.assertEqual(project["shapes"][0]["id"], 1)
+            self.assertEqual(project["flow_directions"]["1"], {"x": 1.0, "y": 0.0})
+            self.assertEqual(
+                project["flow_guides"]["1"],
+                [{"start": [5.0, 10.0], "end": [25.0, 10.0]}],
+            )
             folder_dialog.assert_not_called()
             information.assert_called_once()
             critical.assert_not_called()

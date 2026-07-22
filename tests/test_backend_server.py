@@ -21,6 +21,14 @@ class BackendServerTests(unittest.TestCase):
             backend_server.RenderRequest(
                 shapes_json="shapes.json", out_mp4="result.mp4", num_frames=1000
             )
+        with self.assertRaises(ValidationError):
+            backend_server.RenderRequest(
+                shapes_json="shapes.json", out_mp4="result.mp4", output_fps=61
+            )
+        with self.assertRaises(ValidationError):
+            backend_server.RenderRequest(
+                shapes_json="shapes.json", out_mp4="result.mp4", crf=52
+            )
 
     def test_runtime_path_matches_native_platform(self) -> None:
         windows_path = "H:/project/shapes.json"
@@ -173,6 +181,23 @@ class BackendServerTests(unittest.TestCase):
         self.assertEqual(loop[0].getpixel((0, 0)), (0, 0, 0))
         self.assertEqual(loop[4].getpixel((0, 0)), (140, 0, 0))
         self.assertLess(loop[-1].getpixel((0, 0))[0], 80)
+
+    def test_loop_interpolation_is_cyclic_and_does_not_duplicate_endpoint(self) -> None:
+        import numpy as np
+
+        source = [
+            np.full((2, 2, 3), 0, dtype=np.uint8),
+            np.full((2, 2, 3), 100, dtype=np.uint8),
+        ]
+
+        frames = backend_server._interpolate_loop_frames(source, 4)
+
+        self.assertEqual(len(frames), 4)
+        self.assertEqual(int(frames[0][0, 0, 0]), 0)
+        self.assertEqual(int(frames[1][0, 0, 0]), 50)
+        self.assertEqual(int(frames[2][0, 0, 0]), 100)
+        self.assertEqual(int(frames[3][0, 0, 0]), 50)
+        self.assertFalse(np.array_equal(frames[0], frames[-1]))
 
     def test_status_is_copied_and_active_job_can_be_cancelled(self) -> None:
         job_id = "cancel-test"

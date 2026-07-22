@@ -191,6 +191,9 @@ class RenderRequest(BaseModel):
     pieces_dir: Optional[str] = Field(None, description="Optional (not used by this backend version)")
     fps: int = Field(7, ge=1, le=60)
     num_frames: int = Field(25, ge=2, le=120)
+    output_fps: Optional[int] = Field(None, ge=1, le=60)
+    output_frames: Optional[int] = Field(None, ge=2, le=240)
+    crf: int = Field(18, ge=0, le=51, description="H.264 constant-rate factor")
     pad: int = Field(32, ge=0, le=512)
     feather_px: int = Field(5, ge=0, le=128)
     seed_base: int = Field(123, ge=0, le=2_147_483_647)
@@ -488,6 +491,11 @@ def _card_to_svd_settings(
     motion_bucket_id = {"weak": 80, "normal": 96, "strong": 127}.get(intensity, 96)
     noise_aug_strength = {"weak": 0.008, "normal": 0.015, "strong": 0.03}.get(randomness, 0.015)
     alpha_scale = {"weak": 0.55, "normal": 0.75, "strong": 1.0}.get(opacity, 0.75)
+    from effect_engine.parameters import motion_profile_from_card
+
+    profile = motion_profile_from_card(card)
+    strength = min(strength, float(profile["max_strength"]))
+    cycles = min(cycles, int(profile["max_cycles"]))
     return (
         motion_bucket_id,
         noise_aug_strength,
@@ -718,6 +726,37 @@ def _make_seamless_ping_pong(frames_rgb):
     return result
 
 
+def _iter_interpolated_loop_frames(frames, output_count: int):
+    """Yield a temporally resampled loop without duplicating its endpoint."""
+    import numpy as np
+
+    if not frames:
+        return
+    target = max(2, int(output_count))
+    if target == len(frames):
+        for frame in frames:
+            yield np.asarray(frame, dtype=np.uint8)
+        return
+
+    arrays = [np.asarray(frame, dtype=np.uint8) for frame in frames]
+    source_count = len(arrays)
+    for output_index in range(target):
+        position = output_index * source_count / target
+        left = int(math.floor(position)) % source_count
+        right = (left + 1) % source_count
+        amount = np.float32(position - math.floor(position))
+        blended = (
+            arrays[left].astype(np.float32) * (1.0 - amount)
+            + arrays[right].astype(np.float32) * amount
+        )
+        yield np.clip(np.rint(blended), 0, 255).astype(np.uint8)
+
+
+def _interpolate_loop_frames(frames, output_count: int):
+    """Materialized compatibility helper used by tests and small callers."""
+    return list(_iter_interpolated_loop_frames(frames, output_count))
+
+
 class RenderCancelled(RuntimeError):
     pass
 
@@ -872,6 +911,10 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             fps = 6
         if num_frames == 25:
             num_frames = 14
+    output_fps = int(req.output_fps or fps)
+    output_frames = int(req.output_frames or num_frames)
+    if is_preview and req.output_frames is None:
+        output_frames = num_frames
     pad_eff = max(int(req.pad), 48 if is_preview else 64)
     feather_eff = int(req.feather_px)
     shrink_px = 1 if is_preview else 2
@@ -879,7 +922,11 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     decode_chunk_size = 4 if is_preview else 2
     temporal_strength = 0.12 if is_preview else 0.15
 
-    _append_job_log(job, f"preset: mode={mode} fps={fps} frames={num_frames} pad={pad_eff}")
+    _append_job_log(
+        job,
+        f"preset: mode={mode} generation={num_frames}@{fps}fps "
+        f"output={output_frames}@{output_fps}fps crf={req.crf} pad={pad_eff}",
+    )
 
     # --- choose background (conditioning uses original, base uses without_shape if available) ---
     without_shape_path = os.path.join(base_dir, "without_shape_area.png")
@@ -1219,8 +1266,24 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
             job["progress"] = {"stage": "rendering", "current": li, "total": len(flat), "layer": str(layer_key)}
             _render_one_layer(li, layer_key, entries)
 
+    frames_to_encode = base_frames
+    if output_frames != len(base_frames):
+        job["progress"] = {
+            "stage": "interpolating",
+            "current": len(base_frames),
+            "total": output_frames,
+        }
+        _append_job_log(
+            job,
+            f"loop interpolation: {len(base_frames)} -> {output_frames} frames",
+        )
+        frames_to_encode = _iter_interpolated_loop_frames(
+            base_frames,
+            output_frames,
+        )
+
     # --- encode ---
-    job["progress"] = {"stage": "encoding", "current": total_layers, "total": total_layers}
+    job["progress"] = {"stage": "encoding", "current": 0, "total": output_frames}
     _append_job_log(job, "encoding mp4")
     _check_cancelled(job)
 
@@ -1230,14 +1293,28 @@ def _render_svd_job(job_id: str, req: RenderRequest) -> None:
     try:
         writer = imageio.get_writer(
             temp_mp4_path,
-            fps=fps,
+            fps=output_fps,
             format="FFMPEG",
             codec="libx264",
             pixelformat="yuv420p",
+            quality=None,
+            ffmpeg_params=[
+                "-crf",
+                str(int(req.crf)),
+                "-preset",
+                "medium",
+                "-movflags",
+                "+faststart",
+            ],
         )
-        for t_idx in range(num_frames):
+        for t_idx, frame in enumerate(frames_to_encode, start=1):
             _check_cancelled(job)
-            writer.append_data(base_frames[t_idx][..., :3])
+            writer.append_data(frame[..., :3])
+            job["progress"] = {
+                "stage": "encoding",
+                "current": t_idx,
+                "total": output_frames,
+            }
         writer.close()
         writer = None
         _check_cancelled(job)
