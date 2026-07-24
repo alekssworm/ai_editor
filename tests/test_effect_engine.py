@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 
+from effect_engine.cache import ByteBudgetLRU
 from effect_engine.cli import resolve_render_params
+from effect_engine.color import linear_to_srgb_u8, srgb_u8_to_linear
 from effect_engine.compositor import EffectApplication, EffectCompositor
 from effect_engine.context import EffectContext
 from effect_engine.effects.rain import RainEffect
@@ -697,7 +702,10 @@ class EffectEngineTests(unittest.TestCase):
             name = "fractional"
 
             def apply(self, frame, context) -> None:
-                frame.current += context.mask[..., None] * 0.4
+                # 0.4 of one display-code step. One pass rounds to zero, while
+                # two float passes correctly accumulate to one output value.
+                delta = 0.4 / (255.0 * 12.92)
+                frame.current += context.mask[..., None] * delta
 
         class FractionalEffect(LayeredEffect):
             effect_type = "fractional"
@@ -723,6 +731,97 @@ class EffectEngineTests(unittest.TestCase):
         )
 
         np.testing.assert_array_equal(output, np.ones((1, 1, 3), dtype=np.uint8))
+
+    def test_linear_color_round_trip_and_midpoint(self) -> None:
+        samples = np.array([0, 1, 32, 128, 240, 255], dtype=np.uint8)
+        restored = linear_to_srgb_u8(srgb_u8_to_linear(samples))
+
+        np.testing.assert_array_equal(restored, samples)
+        # Half of the physical light between black and white is about sRGB 188,
+        # not the too-dark sRGB arithmetic midpoint 128.
+        midpoint = int(linear_to_srgb_u8(np.array([0.5], dtype=np.float32))[0])
+        self.assertEqual(midpoint, 188)
+
+    def test_byte_budget_lru_is_bounded_and_thread_safe(self) -> None:
+        cache = ByteBudgetLRU[str, np.ndarray](max_bytes=12)
+        factory_calls = []
+        calls_lock = threading.Lock()
+
+        def create() -> np.ndarray:
+            with calls_lock:
+                factory_calls.append(1)
+            time.sleep(0.01)
+            return np.arange(3, dtype=np.float32)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            values = list(
+                executor.map(
+                    lambda _: cache.get_or_create("a", create),
+                    range(4),
+                )
+            )
+
+        self.assertEqual(len(factory_calls), 1)
+        self.assertTrue(all(value is values[0] for value in values))
+        cache.get_or_create("b", lambda: np.ones(3, dtype=np.float32))
+        info = cache.info()
+        self.assertEqual(info.entries, 1)
+        self.assertLessEqual(info.current_bytes, info.max_bytes)
+        self.assertEqual(info.evictions, 1)
+
+    def test_render_sessions_are_isolated_and_deterministic(self) -> None:
+        assets = self.prepare(seed=91)
+        engine = DeterministicEffectEngine()
+        session_a = engine.create_session()
+        session_b = engine.create_session()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outputs = list(
+                executor.map(
+                    lambda session: np.asarray(
+                        session.render_frame(self.image, assets, 0.37)
+                    ),
+                    (session_a, session_b),
+                )
+            )
+
+        np.testing.assert_array_equal(outputs[0], outputs[1])
+
+    def test_foam_advects_with_flow_and_keeps_a_closed_loop(self) -> None:
+        width, height = 80, 24
+        mask = np.ones((height, width), dtype=np.float32)
+        foam = np.zeros_like(mask)
+        foam[8:16, 18:24] = 1.0
+        flow = np.zeros((height, width, 2), dtype=np.float32)
+        flow[..., 0] = 1.0
+        assets = EffectAssets(
+            effect_type="water",
+            seed=12,
+            mask=mask,
+            depth=np.full_like(mask, 0.5),
+            flow=flow,
+            foam=foam,
+        )
+        image = Image.new("RGB", (width, height), "black")
+        params = {
+            "opacity": 0.0,
+            "highlight": 0.0,
+            "foam_amount": 1.0,
+            "secondary_wavelength": 28.0,
+            "cycles": 1,
+        }
+        engine = DeterministicEffectEngine()
+        at_zero = np.asarray(engine.render_frame(image, assets, 0.0, params))
+        moved = np.asarray(engine.render_frame(image, assets, 0.02, params))
+        at_one = np.asarray(engine.render_frame(image, assets, 1.0, params))
+
+        def horizontal_centroid(frame: np.ndarray) -> float:
+            weights = frame.astype(np.float32).mean(axis=2).sum(axis=0)
+            return float(weights @ np.arange(width) / max(float(weights.sum()), 1e-6))
+
+        np.testing.assert_array_equal(at_zero, at_one)
+        self.assertFalse(np.array_equal(at_zero, moved))
+        self.assertGreater(horizontal_centroid(moved), horizontal_centroid(at_zero))
 
     def test_ai_provider_failures_fall_back_once_and_are_reported(self) -> None:
         class BrokenMaskRefiner:

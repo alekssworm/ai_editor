@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
+from threading import RLock
 from typing import Mapping
 from uuid import uuid4
 
@@ -9,21 +11,47 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
 
-from .compositor import EffectApplication, EffectCompositor
+from .compositor import EffectApplication
 from .effects.base import EffectRenderer
 from .models import EffectAssets
 from .plugins import default_effect_plugin_registry
+from .session import RenderSession
 
 
 class DeterministicEffectEngine:
     def __init__(self) -> None:
-        self._effects: dict[str, EffectRenderer] = {}
-        for plugin in default_effect_plugin_registry().list():
-            self.register(plugin.create_renderer())
-        self._compositor = EffectCompositor(self._effects)
+        self._effect_factories: dict[str, Callable[[], EffectRenderer]] = {
+            plugin.effect_type: plugin.create_renderer
+            for plugin in default_effect_plugin_registry().list()
+        }
+        self._factory_lock = RLock()
+        self._default_session = self.create_session()
 
-    def register(self, effect: EffectRenderer) -> None:
-        self._effects[effect.effect_type.lower()] = effect
+    def create_session(self) -> RenderSession:
+        with self._factory_lock:
+            factories = tuple(self._effect_factories.items())
+        effects = {}
+        for effect_type, factory in factories:
+            effect = factory()
+            if effect.effect_type.lower() != effect_type:
+                raise ValueError(
+                    f"Effect factory for '{effect_type}' created "
+                    f"'{effect.effect_type}'"
+                )
+            effects[effect_type] = effect
+        return RenderSession(effects)
+
+    def register(
+        self,
+        effect: EffectRenderer,
+        *,
+        factory: Callable[[], EffectRenderer] | None = None,
+    ) -> None:
+        """Register a custom effect and its factory for future isolated sessions."""
+        effect_type = effect.effect_type.lower()
+        with self._factory_lock:
+            self._effect_factories[effect_type] = factory or type(effect)
+        self._default_session.register(effect)
 
     def render_frame(
         self,
@@ -32,11 +60,7 @@ class DeterministicEffectEngine:
         t: float,
         params: Mapping[str, float] | None = None,
     ) -> Image.Image:
-        return self._compositor.compose(
-            image,
-            (EffectApplication(assets=assets, params=params or {}),),
-            t,
-        )
+        return self._default_session.render_frame(image, assets, t, params=params)
 
     def render_composite_frame(
         self,
@@ -44,7 +68,7 @@ class DeterministicEffectEngine:
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         t: float,
     ) -> Image.Image:
-        return self._compositor.compose(image, applications, t)
+        return self._default_session.render_composite_frame(image, applications, t)
 
     def render_composite_frames(
         self,
@@ -52,16 +76,11 @@ class DeterministicEffectEngine:
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         frame_count: int,
     ) -> list[Image.Image]:
-        if frame_count < 2:
-            raise ValueError("frame_count must be at least 2")
-        return [
-            self.render_composite_frame(
-                image,
-                applications,
-                frame_index / frame_count,
-            )
-            for frame_index in range(frame_count)
-        ]
+        return self.create_session().render_composite_frames(
+            image,
+            applications,
+            frame_count,
+        )
 
     def render_frames(
         self,
@@ -70,13 +89,12 @@ class DeterministicEffectEngine:
         frame_count: int,
         params: Mapping[str, float] | None = None,
     ) -> list[Image.Image]:
-        if frame_count < 2:
-            raise ValueError("frame_count must be at least 2")
-        # Do not duplicate t=1; after the last frame playback returns to t=0.
-        return [
-            self.render_frame(image, assets, frame_index / frame_count, params=params)
-            for frame_index in range(frame_count)
-        ]
+        return self.create_session().render_frames(
+            image,
+            assets,
+            frame_count,
+            params=params,
+        )
 
     def export_mp4(
         self,
@@ -120,6 +138,7 @@ class DeterministicEffectEngine:
             f".{output.stem}-{uuid4().hex}.tmp{output.suffix or '.mp4'}"
         )
         writer = None
+        session = self.create_session()
         try:
             writer = imageio.get_writer(
                 temporary,
@@ -140,7 +159,7 @@ class DeterministicEffectEngine:
                 ],
             )
             for frame_index in range(int(frame_count)):
-                frame = self.render_composite_frame(
+                frame = session.render_composite_frame(
                     image,
                     applications,
                     frame_index / int(frame_count),

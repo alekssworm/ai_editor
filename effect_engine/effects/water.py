@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Mapping
 
 import numpy as np
+from PIL import Image
 
+from ..cache import ByteBudgetLRU, effect_cache_budget_bytes
+from ..color import srgb_color_to_linear
 from ..context import EffectContext
 from ..layers import EffectFrame, LayeredEffect
 from ..models import EffectAssets
@@ -21,11 +24,14 @@ def _reflect_coordinates(values: np.ndarray, size: int) -> np.ndarray:
 
 def _bilinear_remap(image: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
     height, width = image.shape[:2]
-    output = np.empty_like(image, dtype=np.float32)
+    map_x, map_y = np.broadcast_arrays(map_x, map_y)
+    has_channels = image.ndim == 3
+    output_shape = map_x.shape + ((image.shape[2],) if has_channels else ())
+    output = np.empty(output_shape, dtype=np.float32)
     # Tiling keeps the four gathered RGB neighbours from occupying hundreds of
     # megabytes at 4K while preserving exactly the same interpolation.
-    for row_start in range(0, height, 192):
-        row_end = min(height, row_start + 192)
+    for row_start in range(0, map_x.shape[0], 192):
+        row_end = min(map_x.shape[0], row_start + 192)
         x = _reflect_coordinates(map_x[row_start:row_end], width)
         y = _reflect_coordinates(map_y[row_start:row_end], height)
 
@@ -34,8 +40,11 @@ def _bilinear_remap(image: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> 
         x1 = np.minimum(x0 + 1, width - 1)
         y1 = np.minimum(y0 + 1, height - 1)
 
-        wx = (x - x0)[..., None]
-        wy = (y - y0)[..., None]
+        wx = x - x0
+        wy = y - y0
+        if has_channels:
+            wx = wx[..., None]
+            wy = wy[..., None]
         top = image[y0, x0] * (1.0 - wx) + image[y0, x1] * wx
         bottom = image[y1, x0] * (1.0 - wx) + image[y1, x1] * wx
         output[row_start:row_end] = top * (1.0 - wy) + bottom * wy
@@ -128,63 +137,69 @@ def _water_highlight_color(assets: EffectAssets) -> np.ndarray:
         except ValueError:
             continue
     if not colors:
-        return np.array([205.0, 230.0, 242.0], dtype=np.float32)
+        return srgb_color_to_linear(
+            np.array([205.0, 230.0, 242.0], dtype=np.float32)
+        )
     color = max(colors, key=lambda item: float(item @ np.array([0.21, 0.72, 0.07])))
-    return (color.astype(np.float32) * 0.45 + 255.0 * 0.55).astype(np.float32)
+    display_color = color.astype(np.float32) * 0.45 + 255.0 * 0.55
+    return srgb_color_to_linear(display_color)
 
 
 class WaterWavesLayer:
     name = "waves"
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[int, int, int, int], dict[str, object]] = {}
+        self._cache: ByteBudgetLRU[
+            tuple[int, int, int, int, int], dict[str, object]
+        ] = ByteBudgetLRU(effect_cache_budget_bytes())
 
     def _static_data(self, context: EffectContext) -> dict[str, object]:
         assets = context.assets
-        cache_key = (id(assets), context.seed, assets.width, assets.height)
-        cached = self._cache.pop(cache_key, None)
-        if cached is not None:
-            self._cache[cache_key] = cached
-            return cached
+        cache_key = (
+            assets.cache_token,
+            id(assets),
+            context.seed,
+            assets.width,
+            assets.height,
+        )
 
-        height, width = assets.mask.shape
-        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        flow_x = assets.flow[..., 0]
-        flow_y = assets.flow[..., 1]
-        along, across = _integrated_flow_coordinates(flow_x, flow_y)
-        rng = context.rng("water-waves")
-        phase_a, phase_b, phase_c = rng.uniform(
-            0.0, np.pi * 2.0, size=3
-        ).astype(np.float32)
-        static = {
-            "x": x,
-            "y": y,
-            "along": along,
-            "across": across,
-            "flow_x": flow_x,
-            "flow_y": flow_y,
-            "flow_speed": np.asarray(assets.speed, dtype=np.float32),
-            "mobility": np.clip(1.0 - assets.obstacles, 0.0, 1.0),
-            "depth_scale": 0.65 + assets.depth * 0.7,
-            "style_scale": np.float32(
-                np.clip(
-                    0.85
-                    + assets.style.edge_softness * 0.25
-                    - assets.style.grain * 0.1,
-                    0.7,
-                    1.15,
-                )
-            ),
-            "phase_a": phase_a,
-            "phase_b": phase_b,
-            "phase_c": phase_c,
-            "frequency_scale": np.float32(rng.uniform(0.9, 1.1)),
-            "highlight_color": _water_highlight_color(assets),
-        }
-        self._cache[cache_key] = static
-        if len(self._cache) > 8:
-            self._cache.pop(next(iter(self._cache)))
-        return static
+        def create() -> dict[str, object]:
+            height, width = assets.mask.shape
+            x = np.arange(width, dtype=np.float32)[None, :]
+            y = np.arange(height, dtype=np.float32)[:, None]
+            along, across = _integrated_flow_coordinates(
+                assets.flow[..., 0],
+                assets.flow[..., 1],
+            )
+            rng = context.rng("water-waves")
+            phase_a, phase_b, phase_c = rng.uniform(
+                0.0, np.pi * 2.0, size=3
+            ).astype(np.float32)
+            return {
+                "x": x,
+                "y": y,
+                "along": along,
+                "across": across,
+                "mobility": np.clip(1.0 - assets.obstacles, 0.0, 1.0),
+                "depth_scale": 0.65 + assets.depth * 0.7,
+                "style_scale": np.float32(
+                    np.clip(
+                        0.85
+                        + assets.style.edge_softness * 0.25
+                        - assets.style.grain * 0.1,
+                        0.7,
+                        1.15,
+                    )
+                ),
+                "phase_a": phase_a,
+                "phase_b": phase_b,
+                "phase_c": phase_c,
+                "frequency_scale": np.float32(rng.uniform(0.9, 1.1)),
+                "highlight_color": _water_highlight_color(assets),
+                "foam_region": _foam_region(assets.foam, margin=50),
+            }
+
+        return self._cache.get_or_create(cache_key, create)
 
     def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         config = WaterFlowParams.from_mapping(context.params)
@@ -192,7 +207,6 @@ class WaterWavesLayer:
         static = self._static_data(context)
         along = static["along"]
         across = static["across"]
-        flow_speed = static["flow_speed"]
 
         # Temporal multipliers stay integer so t=1 wraps exactly to t=0.
         # Speed changes amplitude; the integrated coordinates keep phase smooth
@@ -222,6 +236,9 @@ class WaterWavesLayer:
         frame.data["water"].update({
             "config": config,
             "phase": phase,
+            "flow_x": context.flow[..., 0],
+            "flow_y": context.flow[..., 1],
+            "flow_speed": context.speed,
             "wave_a": wave_a,
             "wave_b": wave_b,
             "wave_c": wave_c,
@@ -264,7 +281,7 @@ class WaterDeformationLayer:
                 * np.float32(config.shimmer * 10.0)
                 * (0.6 + assets.style.contrast * 0.4)
             )
-            warped = np.clip(warped + shimmer[..., None], 0.0, 255.0)
+            warped = np.clip(warped + shimmer[..., None] / 255.0, 0.0, 1.0)
 
         alpha = np.clip(
             assets.mask * config.opacity * mobility,
@@ -311,24 +328,114 @@ class WaterFoamLayer:
         assets = context.assets
         config = data["config"]
         highlight_color = data["highlight_color"]
+        region = data["foam_region"]
+        if config.foam_amount <= 0 or region is None:
+            return
+        y_slice, x_slice = region
+        region_height = y_slice.stop - y_slice.start
+        region_width = x_slice.stop - x_slice.start
+        region_pixels = region_height * region_width
+        if region_pixels > 6_000_000:
+            sample_step = 4
+        elif region_pixels > 1_000_000:
+            sample_step = 2
+        else:
+            sample_step = 1
+        sample_y = slice(y_slice.start, y_slice.stop, sample_step)
+        sample_x = slice(x_slice.start, x_slice.stop, sample_step)
+        flow_x, flow_y = data["flow_x"], data["flow_y"]
+        flow_speed, mobility = data["flow_speed"], data["mobility"]
+        x, y = data["x"], data["y"]
+        region_x = x[:, sample_x]
+        region_y = y[sample_y, :]
+        region_flow_x = flow_x[sample_y, sample_x]
+        region_flow_y = flow_y[sample_y, sample_x]
+        region_mobility = mobility[sample_y, sample_x]
 
-        foam_pulse = 0.7 + 0.3 * np.sin(
+        # Two forward-moving samples crossfade over one closed trajectory.
+        # At p=0 the first sample is the original foam map; near p=1 the
+        # second sample reaches that same map, avoiding a visible loop cut.
+        progress = float(np.mod(data["phase"] / (np.pi * 2.0), 1.0))
+        blend = progress * progress * (3.0 - 2.0 * progress)
+        travel = np.clip(
+            config.secondary_wavelength * (0.22 + config.advection * 0.22),
+            6.0,
+            48.0,
+        )
+        local_travel = (
+            travel
+            * (0.35 + flow_speed[sample_y, sample_x] * 0.65)
+            * region_mobility
+        )
+
+        def advect(offset: float) -> np.ndarray:
+            return _bilinear_remap(
+                assets.foam,
+                region_x - region_flow_x * local_travel * offset,
+                region_y - region_flow_y * local_travel * offset,
+            )
+
+        advected = advect(progress) * (1.0 - blend) + advect(
+            progress - 1.0
+        ) * blend
+        # Keep some contact foam attached to banks and rocks while a lighter
+        # part travels downstream. Fine wave detail prevents a flat mask look.
+        region_foam = assets.foam[sample_y, sample_x]
+        foam_field = np.maximum(region_foam * 0.32, advected * 0.88)
+        foam_detail = np.clip(
+            0.72 + data["wave_c"][sample_y, sample_x] * 0.28,
+            0.35,
+            1.0,
+        )
+        foam_pulse = 0.78 + 0.22 * np.sin(
             data["phase"] * 2.0
-            + data["along"]
+            + data["along"][sample_y, sample_x]
             * (np.pi * 2.0 / max(10.0, config.secondary_wavelength))
             + data["phase_c"]
         )
         foam_alpha = np.clip(
-            assets.foam * foam_pulse * config.foam_amount * assets.mask,
+            foam_field
+            * foam_detail
+            * foam_pulse
+            * config.foam_amount
+            * assets.mask[sample_y, sample_x],
             0.0,
             0.9,
-        )[..., None]
-        foam_color = highlight_color * 0.35 + 255.0 * 0.65
+        )
+        if sample_step > 1:
+            foam_alpha = np.asarray(
+                Image.fromarray(foam_alpha.astype(np.float32), mode="F").resize(
+                    (region_width, region_height),
+                    Image.Resampling.BILINEAR,
+                ),
+                dtype=np.float32,
+            )
+        foam_alpha = foam_alpha[..., None]
+        foam_color = highlight_color * 0.35 + 0.65
         # Foam is composited after motion protection so banks/rocks stay still
         # while the contact foam remains visible beside them.
-        frame.current = (
-            frame.current * (1.0 - foam_alpha) + foam_color * foam_alpha
+        target = frame.current[y_slice, x_slice]
+        frame.current[y_slice, x_slice] = (
+            target * (1.0 - foam_alpha) + foam_color * foam_alpha
         )
+
+
+def _foam_region(
+    foam: np.ndarray,
+    *,
+    margin: int,
+) -> tuple[slice, slice] | None:
+    selected = foam > 1e-4
+    selected_y = np.flatnonzero(np.any(selected, axis=1))
+    selected_x = np.flatnonzero(np.any(selected, axis=0))
+    if selected_x.size == 0 or selected_y.size == 0:
+        return None
+    height, width = foam.shape
+    x0 = max(0, int(selected_x.min()) - margin)
+    x1 = min(width, int(selected_x.max()) + margin + 1)
+    y0 = max(0, int(selected_y.min()) - margin)
+    y1 = min(height, int(selected_y.max()) + margin + 1)
+    return slice(y0, y1), slice(x0, x1)
 
 
 class WaterFlowEffect(LayeredEffect):

@@ -18,6 +18,8 @@ Water currently uses `waves`, `deformation`, `highlights` and `foam`; rain uses
 `EffectCompositor` applies multiple prepared effects to the same image in a
 stable order. It keeps intermediate layers in floating point and converts to
 8-bit RGB only once after the final effect, avoiding accumulated rounding loss.
+Blending is performed in linear light instead of display-encoded sRGB, so
+highlights, mist and transparent layers no longer become artificially dark.
 The engine exposes it through `render_composite_frame` and
 `render_composite_frames`:
 
@@ -32,6 +34,14 @@ frame = DeterministicEffectEngine().render_composite_frame(
     image, applications, t=0.25
 )
 ```
+
+`RenderSession` owns effect instances and their caches for one preview/export
+job. `render_frames` and MP4 export create isolated sessions automatically;
+call `engine.create_session()` when rendering a custom sequence concurrently.
+Static maps use a thread-safe byte-budget LRU instead of retaining a fixed
+number of full-resolution assets. The default per-renderer limit is 256 MB and
+can be changed with `AI_EDITOR_EFFECT_CACHE_MB` (set it to `0` to disable the
+cache).
 
 Prepare a water layer from the current `shapes.json` format:
 
@@ -121,6 +131,12 @@ cycles. Still water stays subtle, while river, fast river and waterfall allow
 progressively stronger motion. These limits are shared by the local renderer
 and AI post-processing so extreme settings do not turn the selected area into
 rubber.
+
+Prepared foam is split into anchored contact foam and a flow-guided moving
+component. Two advected samples crossfade over the loop, preserving motion
+direction without introducing a cut at `t=1`. Large foam regions are sampled at
+an adaptive resolution before compositing to keep 4K memory and render time
+bounded.
 
 ## Optional AI preparation
 

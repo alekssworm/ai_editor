@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import count
 from typing import Any
 
 import numpy as np
 
 
 ASSET_VERSION = 2
+_ASSET_CACHE_TOKENS = count(1)
 
 
 @dataclass(slots=True)
@@ -52,6 +54,11 @@ class EffectAssets:
     textures: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     version: int = ASSET_VERSION
+    _cache_token: int = field(
+        default_factory=lambda: next(_ASSET_CACHE_TOKENS),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.effect_type = str(self.effect_type).strip().lower()
@@ -98,6 +105,11 @@ class EffectAssets:
     @property
     def size(self) -> tuple[int, int]:
         return self.width, self.height
+
+    @property
+    def cache_token(self) -> int:
+        """Process-local identity that cannot be reused after object deletion."""
+        return self._cache_token
 
     def validate(self) -> None:
         if not self.effect_type:

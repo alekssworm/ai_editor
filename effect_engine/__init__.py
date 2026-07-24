@@ -25,6 +25,7 @@ from .preparation import (
 )
 from .preset_registry import EffectPreset, PresetRegistry, default_preset_registry
 from .renderer import DeterministicEffectEngine
+from .session import RenderSession
 from .storage import EffectAssetStore
 
 __all__ = [
@@ -47,6 +48,7 @@ __all__ = [
     "PreparationPipeline",
     "ResilientDepthEstimator",
     "ResilientMaskRefiner",
+    "RenderSession",
     "PresetRegistry",
     "StyleProfile",
     "TransformersDepthEstimator",

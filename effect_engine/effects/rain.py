@@ -6,6 +6,8 @@ from typing import Mapping
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
+from ..cache import ByteBudgetLRU, effect_cache_budget_bytes
+from ..color import srgb_color_to_linear
 from ..context import EffectContext
 from ..layers import EffectFrame, LayeredEffect
 
@@ -79,16 +81,21 @@ def _rain_color(context: EffectContext) -> np.ndarray:
         if palette
         else np.array([185.0, 210.0, 230.0], dtype=np.float32)
     )
-    return np.clip(base * 0.38 + np.array([205.0, 225.0, 255.0]) * 0.62, 0, 255)
+    display_color = np.clip(
+        base * 0.38 + np.array([205.0, 225.0, 255.0]) * 0.62,
+        0,
+        255,
+    )
+    return srgb_color_to_linear(display_color)
 
 
 class RainStreakLayer:
     name = "streaks"
 
     def __init__(self) -> None:
-        self._particle_cache: dict[
-            tuple[int, int, int, int, float], dict[str, np.ndarray]
-        ] = {}
+        self._particle_cache: ByteBudgetLRU[
+            tuple[int, int, int, int, int, float], dict[str, np.ndarray]
+        ] = ByteBudgetLRU(min(effect_cache_budget_bytes(), 32 * 1024 * 1024))
 
     def _particle_data(
         self,
@@ -97,31 +104,28 @@ class RainStreakLayer:
     ) -> dict[str, np.ndarray]:
         height, width = context.mask.shape
         cache_key = (
+            context.assets.cache_token,
             id(context.assets),
             context.seed,
             width,
             height,
             round(float(density), 6),
         )
-        cached = self._particle_cache.pop(cache_key, None)
-        if cached is not None:
-            self._particle_cache[cache_key] = cached
-            return cached
-        rng = context.rng("rain-streaks")
-        area = width * height
-        count = max(12, min(4000, int(area * density / 700.0)))
-        particles = {
-            "base_x": rng.uniform(0.0, width, size=count),
-            "base_y": rng.uniform(0.0, height, size=count),
-            "phase": rng.uniform(0.0, 1.0, size=count),
-            "length_scale": rng.uniform(0.55, 1.35, size=count),
-            "intensity": rng.uniform(0.35, 1.0, size=count),
-            "thickness": rng.choice((1, 1, 1, 2), size=count),
-        }
-        self._particle_cache[cache_key] = particles
-        if len(self._particle_cache) > 8:
-            self._particle_cache.pop(next(iter(self._particle_cache)))
-        return particles
+
+        def create() -> dict[str, np.ndarray]:
+            rng = context.rng("rain-streaks")
+            area = width * height
+            count = max(12, min(4000, int(area * density / 700.0)))
+            return {
+                "base_x": rng.uniform(0.0, width, size=count),
+                "base_y": rng.uniform(0.0, height, size=count),
+                "phase": rng.uniform(0.0, 1.0, size=count),
+                "length_scale": rng.uniform(0.55, 1.35, size=count),
+                "intensity": rng.uniform(0.35, 1.0, size=count),
+                "thickness": rng.choice((1, 1, 1, 2), size=count),
+            }
+
+        return self._particle_cache.get_or_create(cache_key, create)
 
     def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         config = RainParams.from_mapping(context.params)
@@ -215,29 +219,32 @@ class RainMistLayer:
     name = "mist"
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[int, int, int, int], dict[str, object]] = {}
+        self._cache: ByteBudgetLRU[
+            tuple[int, int, int, int, int], dict[str, object]
+        ] = ByteBudgetLRU(min(effect_cache_budget_bytes(), 8 * 1024 * 1024))
 
     def _static_data(self, context: EffectContext) -> dict[str, object]:
         height, width = context.mask.shape
-        cache_key = (id(context.assets), context.seed, width, height)
-        cached = self._cache.pop(cache_key, None)
-        if cached is not None:
-            self._cache[cache_key] = cached
-            return cached
-        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
-        phase_a, phase_b = context.rng("rain-mist").uniform(
-            0.0, np.pi * 2.0, size=2
+        cache_key = (
+            context.assets.cache_token,
+            id(context.assets),
+            context.seed,
+            width,
+            height,
         )
-        static = {
-            "x": x,
-            "y": y,
-            "phase_a": phase_a,
-            "phase_b": phase_b,
-        }
-        self._cache[cache_key] = static
-        if len(self._cache) > 8:
-            self._cache.pop(next(iter(self._cache)))
-        return static
+
+        def create() -> dict[str, object]:
+            phase_a, phase_b = context.rng("rain-mist").uniform(
+                0.0, np.pi * 2.0, size=2
+            )
+            return {
+                "x": np.arange(width, dtype=np.float32)[None, :],
+                "y": np.arange(height, dtype=np.float32)[:, None],
+                "phase_a": phase_a,
+                "phase_b": phase_b,
+            }
+
+        return self._cache.get_or_create(cache_key, create)
 
     def apply(self, frame: EffectFrame, context: EffectContext) -> None:
         data = frame.data["rain"]
@@ -264,7 +271,7 @@ class RainMistLayer:
             0.0,
             0.35,
         )[..., None]
-        mist_color = data["color"] * 0.72 + 255.0 * 0.28
+        mist_color = data["color"] * 0.72 + 0.28
         frame.current = frame.current * (1.0 - alpha) + mist_color * alpha
 
 

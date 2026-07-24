@@ -6,6 +6,7 @@ from typing import Any, Protocol
 import numpy as np
 from PIL import Image
 
+from .color import linear_to_srgb_u8, srgb_u8_to_linear
 from .context import EffectContext
 
 
@@ -20,17 +21,18 @@ class EffectFrame:
     @classmethod
     def from_image(cls, image: Image.Image | np.ndarray) -> "EffectFrame":
         if isinstance(image, Image.Image):
-            rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+            rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         else:
-            rgb = np.asarray(image, dtype=np.float32)
+            rgb = np.asarray(image)
             if rgb.ndim != 3 or rgb.shape[2] not in (3, 4):
                 raise ValueError("image must be RGB/RGBA")
             rgb = rgb[..., :3]
-        return cls(original=rgb.copy(), current=rgb.copy())
+        linear = srgb_u8_to_linear(rgb)
+        return cls(original=linear.copy(), current=linear.copy())
 
     def to_image(self) -> Image.Image:
         return Image.fromarray(
-            np.clip(np.rint(self.current), 0, 255).astype(np.uint8),
+            linear_to_srgb_u8(self.current),
             mode="RGB",
         )
 
