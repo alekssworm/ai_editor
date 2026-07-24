@@ -53,8 +53,11 @@ class EffectPreviewDialogTests(unittest.TestCase):
             self.assertEqual(dialog._frame_index, 0)
             self.assertEqual(dialog.map_selector.itemText(1), "Speed")
             dialog.map_selector.setCurrentText("Speed")
-            self.assertFalse(dialog.play_button.isEnabled())
+            self.assertTrue(dialog.play_button.isEnabled())
+            self.assertTrue(dialog.overlay_opacity.isEnabled())
+            dialog.overlay_opacity.setValue(35)
             dialog.map_selector.setCurrentText("Effect")
+            self.assertFalse(dialog.overlay_opacity.isEnabled())
             dialog._next_frame()
             self.assertEqual(dialog._frame_index, 1)
             dialog.close()
@@ -103,7 +106,7 @@ class EffectPreviewDialogTests(unittest.TestCase):
         self.assertEqual(window.ui.save_button.text(), "Save project")
         self.assertEqual(window.ai_window.ui.pushButton_9.text(), "Save effects")
         self.assertTrue(window.ai_window.ui.water_button.isEnabled())
-        self.assertFalse(window.ai_window.ui.fire_button.isEnabled())
+        self.assertTrue(window.ai_window.ui.fire_button.isEnabled())
         self.assertFalse(window.ai_window.ui.light_button.isEnabled())
         self.assertTrue(window.ai_window.ui.weather_tool.isEnabled())
         window.close()
@@ -477,6 +480,33 @@ class EffectPreviewDialogTests(unittest.TestCase):
         self.assertEqual(card["main"]["params"]["density"], 0.82)
         window.close()
 
+    def test_fire_panel_uses_presets_and_json_parameter_schema(self) -> None:
+        from editor import MainWindow
+        from ui_fire_tool import Ui_fire_tool
+
+        window = MainWindow()
+        panel = window.ai_window
+        panel.add_shape_card(25, "Rectangle", "#ff6600")
+        panel.select_shape_card(25)
+        panel.load_tool_panel(Ui_fire_tool)
+        tool_widget = panel.tool_container_layout.itemAt(
+            panel.tool_container_layout.count() - 1
+        ).widget()
+        button = tool_widget.findChild(QPushButton, "main_Campfire")
+
+        self.assertIsNotNone(button)
+        button.click()
+        graphics_widget = panel.shape_cards[25]
+        shape_card = graphics_widget.layout().itemAt(0).widget()
+        intensity = shape_card.findChild(QDoubleSpinBox)
+        self.assertIsNotNone(intensity)
+        self.assertEqual(intensity.property("parameter_id"), "intensity")
+
+        card = panel.collect_shape_cards_data()[0]
+        self.assertEqual(card["tool_type"], "fire")
+        self.assertEqual(card["preset_id"], "campfire")
+        window.close()
+
     def test_flow_direction_drag_is_normalized_and_stored(self) -> None:
         from editor import MainWindow
 
@@ -568,6 +598,25 @@ class EffectPreviewDialogTests(unittest.TestCase):
         self.assertNotIn(12, window.effect_overrides)
         window.flow_direction_controller.cancel()
         self.assertFalse(window.flow_direction_controller.active)
+        window.close()
+
+    def test_flow_direction_edits_support_undo_and_redo(self) -> None:
+        from editor import MainWindow
+
+        window = MainWindow()
+        item = ResizableRectItem(QRectF(10, 10, 80, 50), QColor("#00aaff"))
+        window.scene.addItem(item)
+        window.shape_registry[41] = item
+        item.setSelected(True)
+        self.app.processEvents()
+        controller = window.flow_direction_controller
+
+        self.assertTrue(controller.set_direction(41, (1.0, 0.0)))
+        self.assertTrue(controller.set_direction(41, (0.0, 1.0)))
+        self.assertTrue(controller.undo())
+        self.assertEqual(window.flow_directions[41], (1.0, 0.0))
+        self.assertTrue(controller.redo())
+        self.assertEqual(window.flow_directions[41], (0.0, 1.0))
         window.close()
 
     def test_ai_motion_controls_update_main_flow_and_round_trip(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -12,6 +13,43 @@ from .preset_registry import resolve_card_preset
 from .models import EffectAssets
 from .preparation import PreparationPipeline, create_preparation_pipeline
 from .storage import EffectAssetStore
+
+
+def _preparation_fingerprint(
+    image: Image.Image,
+    rough_mask: Image.Image,
+    *,
+    effect_type: str,
+    seed: int,
+    direction: tuple[float, float] | None,
+    guides: list[dict[str, Any]],
+    manual_overrides: dict[str, Any],
+    pipeline: PreparationPipeline,
+) -> str:
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(b"effect-preparation-v2\0")
+    digest.update(image.mode.encode("ascii", "replace"))
+    digest.update(str(image.size).encode("ascii"))
+    digest.update(image.tobytes())
+    digest.update(rough_mask.mode.encode("ascii", "replace"))
+    digest.update(rough_mask.tobytes())
+    payload = {
+        "effect_type": effect_type,
+        "seed": int(seed),
+        "direction": direction,
+        "guides": guides,
+        "manual_overrides": manual_overrides,
+        "providers": pipeline.cache_signature(),
+    }
+    digest.update(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
 
 
 PROJECT_SCHEMA_VERSION = 3
@@ -350,6 +388,47 @@ def prepare_project_shape(
     manual_overrides = project_effect_overrides(project, requested_id)
 
     preparer = pipeline or create_preparation_pipeline()
+    fingerprint = _preparation_fingerprint(
+        image,
+        rough_mask,
+        effect_type=resolved_effect,
+        seed=int(seed),
+        direction=resolved_direction,
+        guides=guides,
+        manual_overrides=manual_overrides,
+        pipeline=preparer,
+    )
+    project_metadata = {
+        "project": path.name,
+        "shape_id": requested_id,
+        "background": background_path.name,
+        "preparation_fingerprint": fingerprint,
+        **({"preset_id": preset.preset_id} if preset is not None else {}),
+        **({"renderer_params": renderer_params} if renderer_params else {}),
+    }
+    manifest_path = target / EffectAssetStore.MANIFEST_NAME
+    if preparer.cache_read_allowed() and manifest_path.is_file():
+        try:
+            cached = EffectAssetStore.load(target)
+            current_provider_states = preparer.provider_states()
+            stale_fallback = any(
+                current_provider_states.get(stage, {}).get("mode") == "primary"
+                for stage in (cached.metadata.get("provider_warnings") or {})
+            )
+            if (
+                cached.effect_type == resolved_effect
+                and cached.seed == int(seed)
+                and cached.size == image.size
+                and cached.metadata.get("preparation_fingerprint") == fingerprint
+                and not stale_fallback
+            ):
+                cached.metadata.update(project_metadata)
+                cached.metadata["preparation_cache_hit"] = True
+                EffectAssetStore.update_metadata(target, cached.metadata)
+                return cached, target
+        except (OSError, ValueError, KeyError):
+            pass
+
     assets = preparer.prepare(
         image,
         rough_mask,
@@ -358,13 +437,7 @@ def prepare_project_shape(
         direction=resolved_direction,
         guides=guides or None,
         manual_overrides=manual_overrides or None,
-        metadata={
-            "project": path.name,
-            "shape_id": requested_id,
-            "background": background_path.name,
-            **({"preset_id": preset.preset_id} if preset is not None else {}),
-            **({"renderer_params": renderer_params} if renderer_params else {}),
-        },
+        metadata={**project_metadata, "preparation_cache_hit": False},
     )
     EffectAssetStore.save(assets, target)
     return assets, target

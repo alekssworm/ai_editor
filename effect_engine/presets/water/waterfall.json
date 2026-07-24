@@ -5,7 +5,7 @@
   "label": "Waterfall",
   "editor_key": "main_waterfall",
   "aliases": ["waterfall"],
-  "controls": ["intensity", "power", "grain", "opacity", "randomness"],
+  "controls": ["intensity", "power", "grain", "opacity", "randomness", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
   "params": {
     "strength": 6.0,
     "wavelength": 38.0,
@@ -16,6 +16,8 @@
     "shimmer": 0.03,
     "highlight": 0.28,
     "foam_amount": 0.68,
-    "turbulence": 0.42
+    "turbulence": 0.42,
+    "refraction": 0.7,
+    "surface_detail": 0.72
   }
 }

@@ -5,7 +5,7 @@
   "label": "Still water",
   "editor_key": "main_Still_water",
   "aliases": ["still water", "calm_lake"],
-  "controls": ["opacity", "transparency", "reflections", "grain"],
+  "controls": ["opacity", "transparency", "reflections", "grain", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
   "params": {
     "strength": 2.0,
     "wavelength": 92.0,
@@ -16,6 +16,8 @@
     "shimmer": 0.08,
     "highlight": 0.2,
     "foam_amount": 0.05,
-    "turbulence": 0.08
+    "turbulence": 0.08,
+    "refraction": 0.32,
+    "surface_detail": 0.28
   }
 }

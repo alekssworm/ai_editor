@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Callable
 
 from .effects.base import EffectRenderer
+from .effects.fire import FireEffect
 from .effects.rain import RainEffect
 from .effects.water import WaterFlowEffect
 
@@ -78,6 +79,12 @@ def default_effect_plugin_registry() -> EffectPluginRegistry:
                 renderer_factory=RainEffect,
                 panel_id="weather",
                 panel_container="splitter_323",
+            ),
+            EffectPluginManifest(
+                effect_type="fire",
+                renderer_factory=FireEffect,
+                panel_id="fire",
+                panel_container="splitter_2",
             ),
         )
     )

@@ -91,6 +91,8 @@ class WaterFlowParams:
     highlight: float = 0.18
     foam_amount: float = 0.35
     turbulence: float = 0.25
+    refraction: float = 0.6
+    surface_detail: float = 0.45
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, float] | None) -> "WaterFlowParams":
@@ -122,6 +124,16 @@ class WaterFlowParams:
             ),
             turbulence=float(
                 np.clip(values.get("turbulence", defaults.turbulence), 0.0, 1.0)
+            ),
+            refraction=float(
+                np.clip(values.get("refraction", defaults.refraction), 0.0, 1.5)
+            ),
+            surface_detail=float(
+                np.clip(
+                    values.get("surface_detail", defaults.surface_detail),
+                    0.0,
+                    1.0,
+                )
             ),
         )
 
@@ -231,6 +243,40 @@ class WaterWavesLayer:
             - local_phase * 3.0
             + static["phase_c"]
         )
+        wave_d = np.sin(
+            (along * 0.72 - across * 0.54)
+            * (np.pi * 2.0 / max(5.0, config.secondary_wavelength * 0.38))
+            - local_phase * 5.0
+            + static["phase_a"] * 0.7
+            - static["phase_b"] * 0.3
+        )
+        height_field = (
+            wave_a * 0.48
+            + wave_b * 0.25
+            + wave_c * (0.15 + config.turbulence * 0.1)
+            + wave_d * config.surface_detail * 0.12
+        ).astype(np.float32)
+        gradient_y = (
+            np.gradient(height_field, axis=0)
+            if height_field.shape[0] > 1
+            else np.zeros_like(height_field)
+        )
+        gradient_x = (
+            np.gradient(height_field, axis=1)
+            if height_field.shape[1] > 1
+            else np.zeros_like(height_field)
+        )
+        slope_scale = np.float32(0.85 + config.surface_detail * 1.35)
+        normal_x = -gradient_x * slope_scale
+        normal_y = -gradient_y * slope_scale
+        normal_z = np.ones_like(height_field, dtype=np.float32)
+        normal_length = np.maximum(
+            np.sqrt(normal_x**2 + normal_y**2 + normal_z**2),
+            1e-6,
+        )
+        normal_x /= normal_length
+        normal_y /= normal_length
+        normal_z /= normal_length
 
         frame.data["water"] = dict(static)
         frame.data["water"].update({
@@ -242,6 +288,11 @@ class WaterWavesLayer:
             "wave_a": wave_a,
             "wave_b": wave_b,
             "wave_c": wave_c,
+            "wave_d": wave_d,
+            "height": height_field,
+            "normal_x": normal_x,
+            "normal_y": normal_y,
+            "normal_z": normal_z,
         })
 
 
@@ -272,6 +323,16 @@ class WaterDeformationLayer:
         )
         dx = flow_x * displacement_along - flow_y * displacement_across
         dy = flow_y * displacement_along + flow_x * displacement_across
+        refraction_strength = (
+            config.strength
+            * config.refraction
+            * data["depth_scale"]
+            * flow_speed
+            * mobility
+            * 0.42
+        )
+        dx += data["normal_x"] * refraction_strength
+        dy += data["normal_y"] * refraction_strength
 
         warped = _bilinear_remap(frame.original, x + dx, y + dy)
         if config.shimmer > 0:
@@ -307,8 +368,23 @@ class WaterHighlightLayer:
             0.0,
             1.0,
         )
+        # A fixed softbox-like light and the camera-facing view form a stable
+        # Blinn-Phong half vector. Highlights now follow the animated surface
+        # normal instead of brightening arbitrary wave values.
+        half_vector = np.array([-0.22, -0.31, 0.924], dtype=np.float32)
+        half_vector /= np.linalg.norm(half_vector)
+        normal_dot_half = np.clip(
+            data["normal_x"] * half_vector[0]
+            + data["normal_y"] * half_vector[1]
+            + data["normal_z"] * half_vector[2],
+            0.0,
+            1.0,
+        )
+        shininess = 18.0 + assets.style.edge_softness * 30.0
+        specular = normal_dot_half**shininess
+        fresnel = np.clip(1.0 - data["normal_z"], 0.0, 1.0) ** 3
         highlight_alpha = (
-            crest**2
+            (specular * 0.72 + crest**2 * 0.23 + fresnel * 0.12)
             * config.highlight
             * flow_speed
             * mobility

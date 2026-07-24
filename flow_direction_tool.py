@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 
 from PySide6.QtCore import QEvent, QLineF, QObject, QPointF, QRectF, Qt
@@ -135,6 +136,8 @@ class FlowDirectionController(QObject):
         self._drag_start = QPointF()
         self._drag_points: list[QPointF] = []
         self._button_text = window.ui.settings.text()
+        self._undo_history: dict[int, list[dict]] = {}
+        self._redo_history: dict[int, list[dict]] = {}
 
     @property
     def active(self) -> bool:
@@ -253,11 +256,87 @@ class FlowDirectionController(QObject):
             if direction is not None:
                 self._show_direction(item, direction)
 
-    def set_direction(self, shape_id: int, direction, *, preserve_guides=False) -> bool:
+    def _snapshot(self, shape_id: int) -> dict:
+        directions = getattr(self.window, "flow_directions", {})
+        guides = getattr(self.window, "flow_guides", {})
+        overrides = getattr(self.window, "effect_overrides", {})
+        return {
+            "has_direction": shape_id in directions,
+            "direction": copy.deepcopy(directions.get(shape_id)),
+            "has_guides": shape_id in guides,
+            "guides": copy.deepcopy(guides.get(shape_id)),
+            "has_overrides": shape_id in overrides,
+            "overrides": copy.deepcopy(overrides.get(shape_id)),
+        }
+
+    def _record_history(self, shape_id: int) -> None:
+        history = self._undo_history.setdefault(int(shape_id), [])
+        history.append(self._snapshot(int(shape_id)))
+        del history[:-50]
+        self._redo_history.pop(int(shape_id), None)
+
+    def _restore_snapshot(self, shape_id: int, snapshot: dict) -> None:
+        for name, present_key, value_key in (
+            ("flow_directions", "has_direction", "direction"),
+            ("flow_guides", "has_guides", "guides"),
+            ("effect_overrides", "has_overrides", "overrides"),
+        ):
+            mapping = getattr(self.window, name)
+            if snapshot[present_key]:
+                mapping[shape_id] = copy.deepcopy(snapshot[value_key])
+            else:
+                mapping.pop(shape_id, None)
+        direction = normalize_direction(
+            getattr(self.window, "flow_directions", {}).get(shape_id)
+        )
+        ai_window = getattr(self.window, "ai_window", None)
+        if ai_window is not None and direction is not None:
+            ai_window.set_shape_direction(shape_id, direction)
+        item = self.window.shape_registry.get(shape_id)
+        if item is not None:
+            self._show_saved_flow(shape_id, item)
+        scheduler = getattr(self.window, "_schedule_open_preview_refresh", None)
+        if callable(scheduler):
+            scheduler(shape_id)
+
+    def undo(self) -> bool:
+        shape_id = self._shape_id
+        if shape_id is None:
+            shape_id, _ = self._selected_shape()
+        if shape_id is None or not self._undo_history.get(int(shape_id)):
+            return False
+        shape_id = int(shape_id)
+        self._redo_history.setdefault(shape_id, []).append(self._snapshot(shape_id))
+        self._restore_snapshot(shape_id, self._undo_history[shape_id].pop())
+        self.window.statusBar().showMessage("Flow edit undone.", 3500)
+        return True
+
+    def redo(self) -> bool:
+        shape_id = self._shape_id
+        if shape_id is None:
+            shape_id, _ = self._selected_shape()
+        if shape_id is None or not self._redo_history.get(int(shape_id)):
+            return False
+        shape_id = int(shape_id)
+        self._undo_history.setdefault(shape_id, []).append(self._snapshot(shape_id))
+        self._restore_snapshot(shape_id, self._redo_history[shape_id].pop())
+        self.window.statusBar().showMessage("Flow edit restored.", 3500)
+        return True
+
+    def set_direction(
+        self,
+        shape_id: int,
+        direction,
+        *,
+        preserve_guides: bool = False,
+        record_history: bool = True,
+    ) -> bool:
         normalized = normalize_direction(direction)
         item = self.window.shape_registry.get(int(shape_id))
         if normalized is None or item is None:
             return False
+        if record_history:
+            self._record_history(int(shape_id))
         self.window.flow_directions[int(shape_id)] = normalized
         if not preserve_guides:
             getattr(self.window, "flow_guides", {}).pop(int(shape_id), None)
@@ -297,7 +376,8 @@ class FlowDirectionController(QObject):
             "Draw a flow curve. Shift: add curve; Ctrl: fast zone; "
             "Ctrl+Shift: slow; Alt: protect; Alt+Shift: foam; "
             "Ctrl+Alt: mask+; Ctrl+Alt+Shift: mask-; "
-            "Middle: deep; Shift+Middle: shallow; Delete: clear maps; Esc finishes.",
+            "Middle: deep; Shift+Middle: shallow; Delete: clear maps; Esc finishes. "
+            "Ctrl+Z/Y: undo/redo.",
             15000,
         )
 
@@ -418,6 +498,7 @@ class FlowDirectionController(QObject):
             return False
         shape_id = int(self._shape_id)
         key, _, value = self._zone_style(self._edit_mode)
+        self._record_history(shape_id)
         if not hasattr(self.window, "effect_overrides"):
             self.window.effect_overrides = {}
         shape_overrides = self.window.effect_overrides.setdefault(shape_id, {})
@@ -447,6 +528,9 @@ class FlowDirectionController(QObject):
             f"{labels[self._edit_mode]} saved. Continue drawing or press Esc.",
             8000,
         )
+        scheduler = getattr(self.window, "_schedule_open_preview_refresh", None)
+        if callable(scheduler):
+            scheduler(shape_id)
         return True
 
     def _finish_drag(self, end: QPointF) -> None:
@@ -459,6 +543,7 @@ class FlowDirectionController(QObject):
                     self._show_saved_flow(int(self._shape_id), item)
         elif math.hypot(dx, dy) >= 3.0 and self._shape_id is not None:
             shape_id = int(self._shape_id)
+            self._record_history(shape_id)
             start, control1, control2, finish = self._curve_points(end)
             guide = {
                 "start": [float(start.x()), float(start.y())],
@@ -482,12 +567,16 @@ class FlowDirectionController(QObject):
                 shape_id,
                 (average_x, average_y),
                 preserve_guides=True,
+                record_history=False,
             )
             self.window.statusBar().showMessage(
                 f"Flow saved: {len(self.window.flow_guides[shape_id])} guide(s). "
                 "Shift+drag adds another; Esc or the Flow button finishes.",
                 8000,
             )
+            scheduler = getattr(self.window, "_schedule_open_preview_refresh", None)
+            if callable(scheduler):
+                scheduler(shape_id)
         else:
             item = self.window.shape_registry.get(self._shape_id)
             if item is not None and self._shape_id is not None:
@@ -502,12 +591,21 @@ class FlowDirectionController(QObject):
             return super().eventFilter(watched, event)
 
         event_type = event.type()
+        if event_type == QEvent.Type.KeyPress:
+            modifiers = event.modifiers()
+            control = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+            shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            if control and event.key() == Qt.Key.Key_Z:
+                return self.redo() if shift else self.undo()
+            if control and event.key() == Qt.Key.Key_Y:
+                return self.redo()
         if event_type == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
             self.cancel()
             return True
         if event_type == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Delete:
             if self._shape_id is not None:
                 shape_id = int(self._shape_id)
+                self._record_history(shape_id)
                 getattr(self.window, "flow_guides", {}).pop(shape_id, None)
                 getattr(self.window, "effect_overrides", {}).pop(shape_id, None)
                 item = self.window.shape_registry.get(shape_id)

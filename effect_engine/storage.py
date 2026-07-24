@@ -120,3 +120,25 @@ class EffectAssetStore:
             textures={str(key): str(value) for key, value in (data.get("textures") or {}).items()},
             metadata=dict(data.get("metadata") or {}),
         )
+
+    @classmethod
+    def update_metadata(
+        cls,
+        directory: str | Path,
+        metadata: dict,
+    ) -> Path:
+        """Atomically update manifest metadata without rewriting dense maps."""
+        source = Path(directory)
+        manifest_path = source / cls.MANIFEST_NAME
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        data["metadata"] = dict(metadata)
+        temporary = source / f".{cls.MANIFEST_NAME}-{uuid.uuid4().hex[:12]}.tmp"
+        try:
+            temporary.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, manifest_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return manifest_path

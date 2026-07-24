@@ -17,6 +17,7 @@ from effect_engine.cli import resolve_render_params
 from effect_engine.color import linear_to_srgb_u8, srgb_u8_to_linear
 from effect_engine.compositor import EffectApplication, EffectCompositor
 from effect_engine.context import EffectContext
+from effect_engine.effects.fire import FireEffect
 from effect_engine.effects.rain import RainEffect
 from effect_engine.effects.water import WaterFlowEffect, _integrated_flow_coordinates
 from effect_engine.layers import LayeredEffect
@@ -44,6 +45,7 @@ from effect_engine.project import (
     serialize_flow_directions,
     serialize_flow_guides,
 )
+from effect_engine.quality import analyze_effect_quality
 from effect_engine.renderer import DeterministicEffectEngine
 from effect_engine.storage import EffectAssetStore
 
@@ -232,6 +234,73 @@ class EffectEngineTests(unittest.TestCase):
                 float(normalized_flow[assets.mask > 0.5, 1].mean()), -0.95
             )
             self.assertGreater(float(assets.depth.std()), 0.001)
+
+    def test_project_preparation_cache_reuses_ai_maps_by_fingerprint(self) -> None:
+        class CountingMask:
+            name = "counting-mask-v1"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def refine(self, image, rough_mask):
+                del image
+                self.calls += 1
+                return np.asarray(rough_mask, dtype=np.float32)
+
+        class CountingDepth:
+            name = "counting-depth-v1"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def estimate(self, image, mask):
+                del image
+                self.calls += 1
+                return np.full(mask.shape, 0.5, dtype=np.float32)
+
+        mask_provider = CountingMask()
+        depth_provider = CountingDepth()
+        pipeline = PreparationPipeline(
+            mask_refiner=mask_provider,
+            depth_estimator=depth_provider,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 12,
+                        "type": "Rectangle",
+                        "x": 5,
+                        "y": 4,
+                        "width": 30,
+                        "height": 22,
+                    }
+                ],
+                "shape_cards": [{"id": 12, "tool_type": "water"}],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            first, _ = prepare_project_shape(
+                project_path,
+                12,
+                seed=31,
+                pipeline=pipeline,
+            )
+            second, _ = prepare_project_shape(
+                project_path,
+                12,
+                seed=31,
+                pipeline=pipeline,
+            )
+
+            self.assertFalse(first.metadata["preparation_cache_hit"])
+            self.assertTrue(second.metadata["preparation_cache_hit"])
+            self.assertEqual(mask_provider.calls, 1)
+            self.assertEqual(depth_provider.calls, 1)
 
     def test_flow_direction_round_trip_and_project_lookup(self) -> None:
         serialized = serialize_flow_directions(
@@ -870,18 +939,62 @@ class EffectEngineTests(unittest.TestCase):
             set(first.metadata["provider_warnings"]),
             {"mask", "depth"},
         )
+        states = pipeline.retry_failed_providers()
+        self.assertEqual(states["mask"]["mode"], "fallback")
+        pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=10,
+        )
+        self.assertEqual(broken_mask.calls, 2)
+        self.assertEqual(broken_depth.calls, 2)
 
     def test_plugin_manifest_registers_renderer_and_panel_together(self) -> None:
         registry = default_effect_plugin_registry()
         plugins = {plugin.effect_type: plugin for plugin in registry.list()}
 
-        self.assertEqual(set(plugins), {"water", "rain"})
+        self.assertEqual(set(plugins), {"water", "rain", "fire"})
         self.assertEqual(
             [plugin.effect_type for plugin in registry.for_panel("weather")],
             ["rain"],
         )
         self.assertEqual(plugins["water"].panel_container, "splitter_347")
         self.assertIsInstance(plugins["water"].create_renderer(), WaterFlowEffect)
+        self.assertEqual(plugins["fire"].panel_container, "splitter_2")
+        self.assertIsInstance(plugins["fire"].create_renderer(), FireEffect)
+
+    def test_fire_is_deterministic_periodic_masked_and_quality_checked(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="fire",
+            seed=61,
+            direction=(0.0, -1.0),
+        )
+        engine = DeterministicEffectEngine()
+        start = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        repeated = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        end = np.asarray(engine.render_frame(self.image, assets, 1.0))
+        middle = np.asarray(engine.render_frame(self.image, assets, 0.37))
+        source = np.asarray(self.image)
+
+        np.testing.assert_array_equal(start, repeated)
+        np.testing.assert_array_equal(start, end)
+        self.assertFalse(np.array_equal(start, middle))
+        np.testing.assert_array_equal(
+            middle[assets.mask <= 1e-4],
+            source[assets.mask <= 1e-4],
+        )
+        report = analyze_effect_quality(
+            self.image,
+            assets,
+            frame_count=8,
+            engine=engine,
+        )
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual(report.determinism_max_error, 0)
+        self.assertEqual(report.outside_mask_max_error, 0)
 
     def test_parameter_schemas_and_rain_preview(self) -> None:
         schemas = default_parameter_schema_registry()
@@ -890,6 +1003,12 @@ class EffectEngineTests(unittest.TestCase):
         self.assertEqual(rain_schema.get("drop_length").suffix, " px")
         rain_preset = default_preset_registry().resolve("rain", "main_Rain")
         self.assertEqual(rain_preset.preset_id, "rain")
+        fire_schema = schemas.get("fire")
+        self.assertEqual(fire_schema.get("heat_distortion").suffix, " px")
+        self.assertEqual(
+            default_preset_registry().resolve("fire", "main_Campfire").preset_id,
+            "campfire",
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -12,8 +12,8 @@ The default preparation providers are lightweight deterministic fallbacks. SAM/D
 Each rendered frame now receives one immutable `EffectContext` containing the
 normalized loop time, seed, prepared maps and resolved numeric parameters.
 Effects are assembled from ordered layers instead of one large render method.
-Water currently uses `waves`, `deformation`, `highlights` and `foam`; rain uses
-`streaks` and `mist`.
+Water uses `waves`, `deformation`, `highlights` and `foam`; rain uses `streaks`
+and `mist`; fire uses `field`, `distortion`, `flames`, `glow` and `embers`.
 
 `EffectCompositor` applies multiple prepared effects to the same image in a
 stable order. It keeps intermediate layers in floating point and converts to
@@ -89,8 +89,9 @@ inside the preview window for a full-resolution 72-frame H.264 loop. The export
 streams frames to an atomic temporary file at CRF 18 instead of keeping the
 whole video in memory.
 
-The deterministic renderer supports Water and Weather → Rain. Fire, fog, wind,
-smoke and light cards remain disabled until their renderers are implemented.
+The deterministic renderer supports Water, Weather → Rain and Fire. Fire
+includes Campfire, Torch, Candle and Lava presets. Fog, wind, smoke and light
+cards remain disabled until their renderers are implemented.
 
 ### Parameter schemas
 
@@ -106,6 +107,8 @@ stored under `effect_engine/presets/rain`, its controls are numeric and generate
 from `schemas/rain.json`, and its streak/mist layers are periodic at `t=1`.
 Renderer and editor-panel registration share one manifest in `plugins.py`, so a
 new effect is not registered independently in two different code paths.
+Fire is the third plugin and uses the same manifest, preset and schema path
+without special-casing the renderer or ShapeCard.
 
 ### Flow direction
 
@@ -125,6 +128,8 @@ Curves are saved under `flow_guides`; corrections are saved separately under
 `effect_overrides`. Re-running preparation therefore replaces AI proposals but
 reapplies the user's edits afterwards. `Esc` or a second press on `settings`
 finishes editing; `Delete` clears the selected area's manual curves and maps.
+`Ctrl+Z`, `Ctrl+Y` and `Ctrl+Shift+Z` undo and redo flow curves and painted map
+zones for the selected area.
 
 Water presets also apply effect-specific safe limits to strength and loop
 cycles. Still water stays subtle, while river, fast river and waterfall allow
@@ -151,7 +156,9 @@ Models are downloaded on first use and cached in the running editor process.
 Leave the checkbox disabled for the lightweight deterministic preparation path.
 If model loading or inference fails, preparation continues with the offline
 mask/depth provider and Preview displays an `AI fallback` warning with the
-original error. The failing provider is not retried on every preview frame.
+original error. Failed providers use exponential retry backoff; `Retry AI`
+clears the backoff and prepares the open preview again. Mask and Depth status
+are shown separately in the preview.
 Install `torch` for the intended CPU/CUDA environment first, then install the
 client-side model API in the editor virtual environment:
 
@@ -167,6 +174,26 @@ $env:AI_EDITOR_DEPTH_MODEL = "LiheYoung/depth-anything-small-hf"
 $env:AI_EDITOR_AI_DEVICE = "0"  # CUDA device; use -1 for CPU
 ```
 
-The Preview dialog can display `Mask`, `Depth`, `Flow`, `Speed`, `Obstacles`
-and `Foam` before export. Full-resolution export reuses the prepared assets and
-does not run the AI models a second time.
+Preparation is cached on disk by a fingerprint of the source image, rough mask,
+flow guides, manual corrections, seed and provider configuration. Adjusting
+renderer-only strength or opacity therefore reuses Mask/Depth/Flow assets.
+
+The Preview dialog can overlay `Mask`, `Depth`, `Flow`, color-mapped `Speed`,
+`Obstacles` and `Foam` on the animated result with adjustable opacity.
+Full-resolution export reuses the prepared assets and does not run the AI
+models a second time.
+
+## Automated quality checks
+
+`analyze_effect_quality` renders a short sequence and reports determinism,
+changes outside the prepared mask, loop-seam continuity, average frame time and
+peak Python-managed memory:
+
+```python
+from effect_engine import analyze_effect_quality
+
+report = analyze_effect_quality(image, assets, params=params, frame_count=12)
+assert report.passed, report.to_dict()
+```
+
+Engine tests apply the same gates to the built-in effects, including Fire.

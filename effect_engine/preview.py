@@ -27,6 +27,26 @@ class PreviewResult:
     preset_id: str | None = None
     debug_maps: dict[str, Image.Image] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    provider_states: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _speed_colormap(speed: np.ndarray) -> np.ndarray:
+    value = np.clip(np.asarray(speed, dtype=np.float32), 0.0, 1.0)
+    stops = np.array([0.0, 0.22, 0.48, 0.74, 1.0], dtype=np.float32)
+    colors = np.array(
+        [
+            [0.04, 0.08, 0.48],
+            [0.0, 0.58, 0.95],
+            [0.08, 0.9, 0.48],
+            [1.0, 0.86, 0.06],
+            [0.82, 0.02, 0.02],
+        ],
+        dtype=np.float32,
+    )
+    return np.stack(
+        [np.interp(value, stops, colors[:, channel]) for channel in range(3)],
+        axis=-1,
+    ).astype(np.float32)
 
 
 def effect_asset_debug_maps(assets: EffectAssets) -> dict[str, Image.Image]:
@@ -41,9 +61,7 @@ def effect_asset_debug_maps(assets: EffectAssets) -> dict[str, Image.Image]:
         axis=-1,
     ) * selection[..., None]
     speed = np.asarray(assets.speed, dtype=np.float32)
-    speed_rgb = np.stack(
-        (speed, np.sqrt(speed) * 0.75, 1.0 - speed), axis=-1
-    ) * selection[..., None]
+    speed_rgb = _speed_colormap(speed) * selection[..., None]
     obstacle = np.asarray(assets.obstacles, dtype=np.float32)
     obstacle_rgb = np.stack(
         (obstacle, obstacle * 0.12, obstacle * 0.08), axis=-1
@@ -185,6 +203,7 @@ def build_project_preview(
             "wavelength",
             "secondary_wavelength",
             "drop_length",
+            "heat_distortion",
         ):
             if name in params:
                 params[name] = float(params[name]) * scale
@@ -209,6 +228,7 @@ def build_project_preview(
                 assets.metadata.get("provider_warnings") or {}
             ).items()
         ),
+        provider_states=dict(assets.metadata.get("provider_states") or {}),
     )
 
 

@@ -165,6 +165,17 @@ def renderer_params_from_card(
         grain = _level(values.get("grain"), _LEVELS, 1.0)
         result["turbulence"] = result.get("turbulence", 0.25) * grain
         result["shimmer"] = result.get("shimmer", 0.04) * grain
+        schema = default_parameter_schema_registry().get("water")
+        for parameter_id in (
+            "refraction",
+            "surface_detail",
+            "highlight",
+            "foam_amount",
+            "turbulence",
+        ):
+            raw = values.get(parameter_id)
+            if raw is not None:
+                result[parameter_id] = float(schema.get(parameter_id).coerce(raw))
     else:
         schemas = default_parameter_schema_registry()
         if schemas.supports(resolved_effect):

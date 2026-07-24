@@ -866,12 +866,11 @@ class AIWindow(QMainWindow):
         self.ui.weather_tool.setToolTip(
             "Rain presets are supported by the deterministic Local Preview"
         )
-        for button in (
-            self.ui.fire_button,
-            self.ui.light_button,
-        ):
-            button.setEnabled(False)
-            button.setToolTip("Renderer not implemented yet")
+        self.ui.fire_button.setToolTip(
+            "Fire presets are supported by the deterministic Local Preview"
+        )
+        self.ui.light_button.setEnabled(False)
+        self.ui.light_button.setToolTip("Renderer not implemented yet")
         self.ui.label_13.setText("Selected area:")
         self.tool_button_group = QButtonGroup(self)
         self.tool_button_group.setExclusive(True)
@@ -1361,6 +1360,7 @@ class AIWindow(QMainWindow):
         param_block.addWidget(label)
 
         parameter_definitions = ()
+        resolved_preset = None
         params = []
         if is_main:
             try:
@@ -1369,10 +1369,13 @@ class AIWindow(QMainWindow):
                 )
                 from effect_engine.preset_registry import default_preset_registry
 
-                preset = default_preset_registry().resolve(tool_type, button_name)
+                resolved_preset = default_preset_registry().resolve(
+                    tool_type,
+                    button_name,
+                )
                 parameter_definitions = default_parameter_schema_registry().get(
                     tool_type
-                ).select(preset.controls)
+                ).select(resolved_preset.controls)
             except KeyError:
                 parameter_definitions = ()
         if not parameter_definitions:
@@ -1434,7 +1437,15 @@ class AIWindow(QMainWindow):
                     ),
                 )
                 field.setSingleStep(max(1, round(definition.step or 1)))
-                field.setValue(int(definition.coerce(definition.default)))
+                initial_value = (
+                    resolved_preset.params.get(
+                        definition.parameter_id,
+                        definition.default,
+                    )
+                    if resolved_preset is not None
+                    else definition.default
+                )
+                field.setValue(int(definition.coerce(initial_value)))
                 field.setSuffix(definition.suffix)
             else:
                 field = QDoubleSpinBox()
@@ -1444,7 +1455,15 @@ class AIWindow(QMainWindow):
                     float(definition.maximum if definition.maximum is not None else 9999),
                 )
                 field.setSingleStep(float(definition.step or 0.1))
-                field.setValue(float(definition.coerce(definition.default)))
+                initial_value = (
+                    resolved_preset.params.get(
+                        definition.parameter_id,
+                        definition.default,
+                    )
+                    if resolved_preset is not None
+                    else definition.default
+                )
+                field.setValue(float(definition.coerce(initial_value)))
                 field.setSuffix(definition.suffix)
             parameter_id = definition.parameter_id if definition else str(param)
             field.setProperty("parameter_id", parameter_id)

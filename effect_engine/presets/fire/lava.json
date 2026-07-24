@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "lava",
+  "effect_type": "fire",
+  "label": "Lava",
+  "editor_key": "main_Lava",
+  "aliases": ["Lava", "lava"],
+  "controls": ["intensity", "flame_height", "turbulence", "heat_distortion", "glow", "ember_density", "opacity"],
+  "params": {
+    "intensity": 0.68,
+    "flame_height": 0.32,
+    "turbulence": 0.72,
+    "heat_distortion": 1.45,
+    "glow": 0.6,
+    "ember_density": 0.08,
+    "opacity": 0.9,
+    "cycles": 1
+  }
+}

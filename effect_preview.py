@@ -5,7 +5,7 @@ from typing import Callable
 
 from PIL import Image
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage, QPixmap, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QImage, QPainter, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QComboBox,
+    QSlider,
     QVBoxLayout,
 )
 
@@ -55,11 +56,19 @@ class EffectPreviewDialog(QDialog):
         self._debug_maps = {
             name: _to_qimage(image) for name, image in result.debug_maps.items()
         }
+        mask_map = self._debug_maps.get("Mask")
+        if mask_map is not None:
+            alpha = mask_map.convertToFormat(QImage.Format.Format_Grayscale8)
+            for name, debug_map in tuple(self._debug_maps.items()):
+                overlay = debug_map.convertToFormat(QImage.Format.Format_ARGB32)
+                overlay.setAlphaChannel(alpha)
+                self._debug_maps[name] = overlay
         self._frame_index = 0
         self._playing = True
         self._export_callback = export_callback
         self._default_export_path = str(default_export_path or "effect_loop.mp4")
         self._export_running = False
+        self.shape_id = int(result.shape_id)
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -72,6 +81,11 @@ class EffectPreviewDialog(QDialog):
         )
         if result.warnings:
             status += " · AI fallback"
+        if result.provider_states:
+            status += " · " + " · ".join(
+                f"{name.title()}: {state.get('mode', 'unknown')}"
+                for name, state in result.provider_states.items()
+            )
         self.status_label = QLabel(status)
         tooltip = str(result.assets_dir)
         if result.warnings:
@@ -87,6 +101,12 @@ class EffectPreviewDialog(QDialog):
             "Inspect prepared maps before deterministic rendering"
         )
         self.map_selector.currentTextChanged.connect(self._show_current_frame)
+        self.overlay_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.overlay_opacity.setRange(0, 100)
+        self.overlay_opacity.setValue(72)
+        self.overlay_opacity.setFixedWidth(90)
+        self.overlay_opacity.setToolTip("Prepared map overlay opacity")
+        self.overlay_opacity.valueChanged.connect(self._show_current_frame)
         self.export_button = QPushButton("Export MP4 (24 fps)")
         self.export_button.setToolTip(
             "Full-resolution deterministic export: 72 frames, H.264 CRF 18"
@@ -99,6 +119,8 @@ class EffectPreviewDialog(QDialog):
         controls = QHBoxLayout()
         controls.addWidget(self.status_label)
         controls.addWidget(self.map_selector)
+        controls.addWidget(QLabel("Overlay"))
+        controls.addWidget(self.overlay_opacity)
         controls.addStretch(1)
         controls.addWidget(self.export_button)
         controls.addWidget(self.play_button)
@@ -117,11 +139,21 @@ class EffectPreviewDialog(QDialog):
     def _show_current_frame(self) -> None:
         selected_map = self.map_selector.currentText()
         if selected_map != "Effect" and selected_map in self._debug_maps:
-            image = self._debug_maps[selected_map]
-            self.play_button.setEnabled(False)
+            if self._frames:
+                image = self._frames[self._frame_index].copy()
+                painter = QPainter(image)
+                painter.setOpacity(self.overlay_opacity.value() / 100.0)
+                painter.drawImage(0, 0, self._debug_maps[selected_map])
+                painter.end()
+                self.play_button.setEnabled(True)
+            else:
+                image = self._debug_maps[selected_map]
+                self.play_button.setEnabled(False)
+            self.overlay_opacity.setEnabled(True)
         elif self._frames:
             image = self._frames[self._frame_index]
             self.play_button.setEnabled(True)
+            self.overlay_opacity.setEnabled(False)
         else:
             return
         pixmap = QPixmap.fromImage(image)

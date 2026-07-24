@@ -24,6 +24,7 @@ from .preparation import (
     create_preparation_pipeline,
 )
 from .preset_registry import EffectPreset, PresetRegistry, default_preset_registry
+from .quality import EffectQualityReport, analyze_effect_quality
 from .renderer import DeterministicEffectEngine
 from .session import RenderSession
 from .storage import EffectAssetStore
@@ -45,6 +46,7 @@ __all__ = [
     "EffectAssets",
     "EffectAssetStore",
     "EffectPreset",
+    "EffectQualityReport",
     "PreparationPipeline",
     "ResilientDepthEstimator",
     "ResilientMaskRefiner",
@@ -53,6 +55,7 @@ __all__ = [
     "StyleProfile",
     "TransformersDepthEstimator",
     "TransformersMaskRefiner",
+    "analyze_effect_quality",
     "create_preparation_pipeline",
     "default_parameter_schema_registry",
     "default_preset_registry",

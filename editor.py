@@ -3,9 +3,10 @@ import os
 
 import backend_client
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QMainWindow, QGraphicsScene,
+    QApplication, QCheckBox, QMainWindow, QGraphicsScene, QPushButton,
 )
 
 from ai_panel_logic import AIWindow
@@ -38,6 +39,7 @@ from m_event import MouseMoveFilter
 from effect_preview import start_effect_preview
 from flow_direction_tool import FlowDirectionController
 from effect_engine.project import normalize_direction
+from effect_engine.preparation import create_preparation_pipeline
 
 
 class MainWindow(QMainWindow):
@@ -101,6 +103,19 @@ class MainWindow(QMainWindow):
             max(0, self.ui.horizontalLayout_4.count() - 1),
             self.ai_prepare_checkbox,
         )
+        self.ai_retry_button = QPushButton("Retry AI")
+        self.ai_retry_button.setToolTip(
+            "Clear Mask/Depth retry backoff and prepare the selected area again"
+        )
+        self.ai_retry_button.clicked.connect(self._retry_ai_preparation)
+        self.ui.horizontalLayout_4.insertWidget(
+            max(0, self.ui.horizontalLayout_4.count() - 1),
+            self.ai_retry_button,
+        )
+        self._preview_debounce = QTimer(self)
+        self._preview_debounce.setSingleShot(True)
+        self._preview_debounce.setInterval(320)
+        self._preview_debounce.timeout.connect(self._refresh_open_preview)
 
         # Подключение селектора
         self.scene.selectionChanged.connect(lambda: on_shape_selected(self))
@@ -182,6 +197,35 @@ class MainWindow(QMainWindow):
             self.flow_guides.pop(shape_id, None)
         self.flow_directions[shape_id] = direction
         self.flow_direction_controller.refresh_for_selection()
+        self._schedule_open_preview_refresh(shape_id)
+
+    def _schedule_open_preview_refresh(self, shape_id: int | None = None) -> None:
+        dialog = getattr(self, "_effect_preview_dialog", None)
+        if dialog is None:
+            return
+        try:
+            if shape_id is not None and int(dialog.shape_id) != int(shape_id):
+                return
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return
+        self._preview_debounce.start()
+
+    def _refresh_open_preview(self) -> None:
+        if getattr(self, "_effect_preview_running", False):
+            self._preview_debounce.start()
+            return
+        dialog = getattr(self, "_effect_preview_dialog", None)
+        if dialog is not None:
+            start_effect_preview(self)
+
+    def _retry_ai_preparation(self) -> None:
+        self.ai_prepare_checkbox.setChecked(True)
+        states = create_preparation_pipeline(True).retry_failed_providers()
+        summary = ", ".join(
+            f"{name}: retry ready" for name in states
+        ) or "AI providers: retry ready"
+        self.statusBar().showMessage(summary, 5000)
+        self._schedule_open_preview_refresh()
 
     def _sync_current_project(self):
         """Persist current geometry/effects silently before preview or rendering."""

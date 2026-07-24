@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
 
@@ -172,12 +173,58 @@ class TransformersMaskRefiner:
 
 
 @dataclass(slots=True)
+class ProviderRetryState:
+    base_delay_seconds: float = 20.0
+    max_delay_seconds: float = 300.0
+    disabled_reason: str | None = None
+    failure_count: int = 0
+    next_retry_at: float = 0.0
+
+    def can_attempt(self) -> bool:
+        return self.disabled_reason is None or time.monotonic() >= self.next_retry_at
+
+    def failed(self, error: Exception) -> None:
+        self.failure_count += 1
+        self.disabled_reason = f"{type(error).__name__}: {error}"
+        delay = min(
+            self.max_delay_seconds,
+            self.base_delay_seconds * 2 ** max(0, self.failure_count - 1),
+        )
+        self.next_retry_at = time.monotonic() + delay
+
+    def succeeded(self) -> None:
+        self.disabled_reason = None
+        self.failure_count = 0
+        self.next_retry_at = 0.0
+
+    def retry_now(self) -> None:
+        self.next_retry_at = 0.0
+
+    def status(self) -> dict[str, Any]:
+        retry_in = max(0.0, self.next_retry_at - time.monotonic())
+        return {
+            "mode": "fallback" if self.disabled_reason else "primary",
+            "failure_count": self.failure_count,
+            "retry_in_seconds": round(retry_in, 1),
+            **(
+                {"error": self.disabled_reason}
+                if self.disabled_reason is not None
+                else {}
+            ),
+        }
+
+
+@dataclass(slots=True)
 class ResilientMaskRefiner:
     """Use the offline refiner after the first AI load or inference failure."""
 
     primary: MaskRefiner
     fallback: MaskRefiner = field(default_factory=MorphologyMaskRefiner)
-    disabled_reason: str | None = field(default=None, init=False)
+    retry_state: ProviderRetryState = field(default_factory=ProviderRetryState)
+
+    @property
+    def disabled_reason(self) -> str | None:
+        return self.retry_state.disabled_reason
 
     @property
     def name(self) -> str:
@@ -188,12 +235,20 @@ class ResilientMaskRefiner:
         return getattr(self.primary, "model", None)
 
     def refine(self, image: np.ndarray, rough_mask: np.ndarray) -> np.ndarray:
-        if self.disabled_reason is None:
+        if self.retry_state.can_attempt():
             try:
-                return self.primary.refine(image, rough_mask)
+                result = self.primary.refine(image, rough_mask)
+                self.retry_state.succeeded()
+                return result
             except Exception as error:
-                self.disabled_reason = f"{type(error).__name__}: {error}"
+                self.retry_state.failed(error)
         return self.fallback.refine(image, rough_mask)
+
+    def retry_now(self) -> None:
+        self.retry_state.retry_now()
+
+    def status(self) -> dict[str, Any]:
+        return self.retry_state.status()
 
 
 @dataclass(slots=True)
@@ -282,7 +337,11 @@ class ResilientDepthEstimator:
 
     primary: DepthEstimator
     fallback: DepthEstimator = field(default_factory=ImageAwareDepthEstimator)
-    disabled_reason: str | None = field(default=None, init=False)
+    retry_state: ProviderRetryState = field(default_factory=ProviderRetryState)
+
+    @property
+    def disabled_reason(self) -> str | None:
+        return self.retry_state.disabled_reason
 
     @property
     def name(self) -> str:
@@ -293,18 +352,49 @@ class ResilientDepthEstimator:
         return getattr(self.primary, "model", None)
 
     def estimate(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        if self.disabled_reason is None:
+        if self.retry_state.can_attempt():
             try:
-                return self.primary.estimate(image, mask)
+                result = self.primary.estimate(image, mask)
+                self.retry_state.succeeded()
+                return result
             except Exception as error:
-                self.disabled_reason = f"{type(error).__name__}: {error}"
+                self.retry_state.failed(error)
         return self.fallback.estimate(image, mask)
+
+    def retry_now(self) -> None:
+        self.retry_state.retry_now()
+
+    def status(self) -> dict[str, Any]:
+        return self.retry_state.status()
+
+
+def _blur_float_map(value: np.ndarray, radius: float) -> np.ndarray:
+    source = np.asarray(value, dtype=np.float32)
+    minimum = float(np.nanmin(source))
+    maximum = float(np.nanmax(source))
+    span = maximum - minimum
+    if not np.isfinite(span) or span <= 1e-8:
+        return np.full_like(source, minimum, dtype=np.float32)
+    normalized = np.clip((source - minimum) / span, 0.0, 1.0)
+    blurred = np.asarray(
+        Image.fromarray(np.rint(normalized * 255.0).astype(np.uint8), mode="L").filter(
+            ImageFilter.GaussianBlur(radius=max(0.0, float(radius)))
+        ),
+        dtype=np.float32,
+    )
+    return blurred * (span / 255.0) + minimum
+
+
+def _axis_gradient(value: np.ndarray, axis: int) -> np.ndarray:
+    if value.shape[axis] <= 1:
+        return np.zeros_like(value, dtype=np.float32)
+    return np.gradient(value, axis=axis).astype(np.float32)
 
 
 @dataclass(slots=True)
 class DirectionalFlowEstimator:
     variation: float = 0.28
-    name: str = "directional-flow-v2"
+    name: str = "directional-flow-v3"
 
     @staticmethod
     def _principal_direction(mask: np.ndarray) -> tuple[float, float]:
@@ -423,15 +513,64 @@ class DirectionalFlowEstimator:
         direction_x /= direction_length
         direction_y /= direction_length
 
+        # Diffuse sparse curve guidance through the selected material while
+        # retaining stronger user-authored directions close to each curve.
+        support = np.maximum(_blur_float_map(mask, 3.5), 1e-4)
+        smooth_x = _blur_float_map(direction_x * mask, 3.5) / support
+        smooth_y = _blur_float_map(direction_y * mask, 3.5) / support
+        guide_confidence = np.clip((total_weight - 0.35) / 1.2, 0.0, 1.0)
+        smooth_amount = (0.46 - guide_confidence * 0.28) * np.clip(mask, 0.0, 1.0)
+        direction_x = direction_x * (1.0 - smooth_amount) + smooth_x * smooth_amount
+        direction_y = direction_y * (1.0 - smooth_amount) + smooth_y * smooth_amount
+
         gray = np.asarray(
             Image.fromarray(image, mode="RGB")
             .convert("L")
             .filter(ImageFilter.GaussianBlur(radius=3.0)),
             dtype=np.float32,
         ) / 255.0
-        grad_y, grad_x = np.gradient(gray)
+        grad_y = _axis_gradient(gray, 0)
+        grad_x = _axis_gradient(gray, 1)
+        edge_strength = np.hypot(grad_x, grad_y)
+        selected_edges = edge_strength[mask > 0.1]
+        edge_scale = (
+            float(np.percentile(selected_edges, 90))
+            if selected_edges.size
+            else 0.0
+        )
+        if edge_scale > 1e-6:
+            edge_weight = np.clip(edge_strength / edge_scale, 0.0, 1.0) * mask
+            normal_x = grad_x / np.maximum(edge_strength, 1e-6)
+            normal_y = grad_y / np.maximum(edge_strength, 1e-6)
+            normal_component = direction_x * normal_x + direction_y * normal_y
+            tangent_x = direction_x - normal_component * normal_x
+            tangent_y = direction_y - normal_component * normal_y
+            tangent_length = np.maximum(np.hypot(tangent_x, tangent_y), 1e-6)
+            tangent_x /= tangent_length
+            tangent_y /= tangent_length
+            # Keep obstacle avoidance subordinate to the authored/global
+            # direction.  A strong projection here can rotate an entire
+            # vertical river because of texture edges in the source artwork.
+            avoid_amount = edge_weight * 0.18
+            direction_x = direction_x * (1.0 - avoid_amount) + tangent_x * avoid_amount
+            direction_y = direction_y * (1.0 - avoid_amount) + tangent_y * avoid_amount
+
+        # One inexpensive pressure-projection approximation reduces local
+        # sources/sinks that otherwise stretch the animated texture.
+        divergence = _axis_gradient(direction_x, 1) + _axis_gradient(direction_y, 0)
+        pressure = _blur_float_map(divergence * mask, 4.0)
+        direction_x -= _axis_gradient(pressure, 1) * mask * 0.32
+        direction_y -= _axis_gradient(pressure, 0) * mask * 0.32
+        direction_length = np.maximum(np.hypot(direction_x, direction_y), 1e-6)
+        direction_x /= direction_length
+        direction_y /= direction_length
+
         along_gradient = grad_x * direction_x + grad_y * direction_y
-        scale = float(np.percentile(np.abs(along_gradient[mask > 0.1]), 90)) if np.any(mask > 0.1) else 0.0
+        scale = (
+            float(np.percentile(np.abs(along_gradient[mask > 0.1]), 90))
+            if np.any(mask > 0.1)
+            else 0.0
+        )
         if scale > 1e-6:
             variation = np.clip(along_gradient / scale, -1.0, 1.0) * self.variation
         else:
@@ -441,13 +580,6 @@ class DirectionalFlowEstimator:
         flow[..., 1] = direction_y + direction_x * variation
         flow_length = np.maximum(np.linalg.norm(flow, axis=-1, keepdims=True), 1e-6)
         flow /= flow_length
-        edge_strength = np.hypot(grad_x, grad_y)
-        selected_edges = edge_strength[mask > 0.1]
-        edge_scale = (
-            float(np.percentile(selected_edges, 90))
-            if selected_edges.size
-            else 0.0
-        )
         if edge_scale > 1e-6:
             obstacle_factor = 1.0 - 0.45 * np.clip(
                 edge_strength / edge_scale, 0.0, 1.0
@@ -607,6 +739,7 @@ class NoTextureGenerator:
 @dataclass(slots=True)
 class StyleAnalyzer:
     palette_size: int = 5
+    name: str = "statistics-v1"
 
     def analyze(self, image: np.ndarray, mask: np.ndarray) -> StyleProfile:
         selected = image[mask > 0.1]
@@ -664,6 +797,73 @@ class PreparationPipeline:
     flow_estimator: FlowEstimator = field(default_factory=DirectionalFlowEstimator)
     texture_generator: TextureGenerator = field(default_factory=NoTextureGenerator)
     style_analyzer: StyleAnalyzer = field(default_factory=StyleAnalyzer)
+    _force_refresh: bool = field(default=False, init=False, repr=False)
+
+    def cache_signature(self) -> dict[str, Any]:
+        def provider_identity(provider: object) -> dict[str, Any]:
+            primary = getattr(provider, "primary", provider)
+            return {
+                "provider": f"{type(provider).__module__}.{type(provider).__name__}",
+                "primary": f"{type(primary).__module__}.{type(primary).__name__}",
+                "name": str(getattr(primary, "name", getattr(provider, "name", ""))),
+                **(
+                    {"model": str(model)}
+                    if (model := getattr(primary, "model", None))
+                    else {}
+                ),
+                **(
+                    {"device": int(device)}
+                    if (device := getattr(primary, "device", None)) is not None
+                    else {}
+                ),
+            }
+
+        return {
+            "mask": provider_identity(self.mask_refiner),
+            "depth": provider_identity(self.depth_estimator),
+            "flow": provider_identity(self.flow_estimator),
+            "texture": provider_identity(self.texture_generator),
+            "style": provider_identity(self.style_analyzer),
+        }
+
+    def cache_read_allowed(self) -> bool:
+        if self._force_refresh:
+            return False
+        for provider in (self.mask_refiner, self.depth_estimator):
+            retry_state = getattr(provider, "retry_state", None)
+            if (
+                retry_state is not None
+                and retry_state.disabled_reason is not None
+                and retry_state.can_attempt()
+            ):
+                return False
+        return True
+
+    def retry_failed_providers(self) -> dict[str, dict[str, Any]]:
+        self._force_refresh = True
+        for provider in (self.mask_refiner, self.depth_estimator):
+            retry = getattr(provider, "retry_now", None)
+            if callable(retry):
+                retry()
+        return self.provider_states()
+
+    def provider_states(self) -> dict[str, dict[str, Any]]:
+        states = {}
+        for key, provider in (
+            ("mask", self.mask_refiner),
+            ("depth", self.depth_estimator),
+        ):
+            status = getattr(provider, "status", None)
+            states[key] = (
+                dict(status())
+                if callable(status)
+                else {
+                    "mode": "deterministic",
+                    "failure_count": 0,
+                    "retry_in_seconds": 0.0,
+                }
+            )
+        return states
 
     def prepare(
         self,
@@ -677,6 +877,7 @@ class PreparationPipeline:
         manual_overrides: Mapping[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EffectAssets:
+        self._force_refresh = False
         rgb = _rgb_array(image)
         size = rgb.shape[1], rgb.shape[0]
         rough = _mask_array(rough_mask, size)
@@ -749,6 +950,7 @@ class PreparationPipeline:
         }
         if provider_warnings:
             preparation_metadata["provider_warnings"] = provider_warnings
+        preparation_metadata["provider_states"] = self.provider_states()
         preparation_metadata.update(metadata or {})
         if direction is not None:
             preparation_metadata["direction"] = [float(direction[0]), float(direction[1])]
