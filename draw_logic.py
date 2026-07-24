@@ -73,10 +73,23 @@ class DrawingToolController:
 
             parent_id = None
             new_item_rect = self.current_item.sceneBoundingRect()
-            for sid, obj in self.parent.shape_registry.items():
-                if obj is not self.current_item and obj.sceneBoundingRect().contains(new_item_rect.center()):
-                    parent_id = sid
-                    break
+            dead = []
+            for sid, obj in list(self.parent.shape_registry.items()):
+                if obj is self.current_item:
+                    continue
+                try:
+                    if obj is None or obj.scene() is None:
+                        dead.append(sid)
+                        continue
+                    if obj.sceneBoundingRect().contains(new_item_rect.center()):
+                        parent_id = sid
+                        break
+                except RuntimeError:
+                    dead.append(sid)
+
+            for sid in dead:
+                self.parent.shape_registry.pop(sid, None)
+
             self.parent.shape_parents[shape_id] = parent_id
             add_shape_to_list(self.parent.ui, shape_id, color)
 
@@ -184,4 +197,3 @@ class DrawingToolController:
         self.parent.shape_parents[shape_id] = parent_id
 
         self.clear_polygon_temp()
-
