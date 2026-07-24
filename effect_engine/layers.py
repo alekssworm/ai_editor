@@ -19,7 +19,12 @@ class EffectFrame:
     data: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_image(cls, image: Image.Image | np.ndarray) -> "EffectFrame":
+    def from_image(
+        cls,
+        image: Image.Image | np.ndarray,
+        *,
+        copy_original: bool = True,
+    ) -> "EffectFrame":
         if isinstance(image, Image.Image):
             rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
         else:
@@ -28,7 +33,10 @@ class EffectFrame:
                 raise ValueError("image must be RGB/RGBA")
             rgb = rgb[..., :3]
         linear = srgb_u8_to_linear(rgb)
-        return cls(original=linear.copy(), current=linear.copy())
+        return cls(
+            original=linear.copy() if copy_original else linear,
+            current=linear.copy() if copy_original else linear,
+        )
 
     def to_image(self) -> Image.Image:
         return Image.fromarray(

@@ -10,7 +10,12 @@ from ..cache import ByteBudgetLRU, effect_cache_budget_bytes
 from ..color import srgb_color_to_linear
 from ..context import EffectContext
 from ..layers import EffectFrame, LayeredEffect
-from .water import _bilinear_remap, _integrated_flow_coordinates
+from ..spatial import (
+    bilinear_remap,
+    gaussian_blur_float,
+    integrated_flow_coordinates,
+    periodic_sine,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +119,7 @@ class FireFieldLayer:
             else:
                 top, bottom = 0.0, float(max(1, height - 1))
             vertical = np.clip((y - top) / max(1.0, bottom - top), 0.0, 1.0)
-            along, across = _integrated_flow_coordinates(
+            along, across = integrated_flow_coordinates(
                 context.flow[..., 0],
                 context.flow[..., 1],
             )
@@ -146,30 +151,36 @@ class FireFieldLayer:
         phases = data["phases"]
         height, width = context.mask.shape
         noise = (
-            np.sin(
+            periodic_sine(
                 x / max(5.0, width * 0.055)
-                + along / max(9.0, height * 0.12)
-                - phase * 2.0
-                + phases[0]
+                + along / max(9.0, height * 0.12),
+                phase,
+                temporal_cycles=2,
+                offset=phases[0],
             )
             * 0.34
-            + np.sin(
+            + periodic_sine(
                 y / max(7.0, height * 0.09)
-                - across / max(8.0, width * 0.11)
-                - phase * 3.0
-                + phases[1]
+                - across / max(8.0, width * 0.11),
+                phase,
+                temporal_cycles=3,
+                offset=phases[1],
             )
             * 0.27
-            + np.sin(
-                (x * 0.73 + y * 0.31) / max(4.0, min(width, height) * 0.045)
-                - phase * 5.0
-                + phases[2]
+            + periodic_sine(
+                (x * 0.73 + y * 0.31)
+                / max(4.0, min(width, height) * 0.045),
+                phase,
+                temporal_cycles=5,
+                offset=phases[2],
             )
             * (0.11 + config.turbulence * 0.14)
-            + np.sin(
-                (x * 1.4 - y * 0.82) / max(3.0, min(width, height) * 0.028)
-                - phase * 7.0
-                + phases[3]
+            + periodic_sine(
+                (x * 1.4 - y * 0.82)
+                / max(3.0, min(width, height) * 0.028),
+                phase,
+                temporal_cycles=7,
+                offset=phases[3],
             )
             * config.turbulence
             * 0.08
@@ -223,7 +234,7 @@ class FireDistortionLayer:
         )
         map_x = data["x"] + gradient_y * influence
         map_y = data["y"] - gradient_x * influence * 0.45
-        distorted = _bilinear_remap(frame.original, map_x, map_y)
+        distorted = bilinear_remap(frame.original, map_x, map_y)
         alpha = np.clip(influence / 8.0, 0.0, 0.5)[..., None]
         frame.current = frame.current * (1.0 - alpha) + distorted * alpha
 
@@ -264,13 +275,11 @@ class FireGlowLayer:
             return
         height, width = context.mask.shape
         radius = max(1.0, min(width, height) * 0.018)
-        source = np.rint(data["flame"] * 255.0).astype(np.uint8)
-        glow = np.asarray(
-            Image.fromarray(source, mode="L").filter(
-                ImageFilter.GaussianBlur(radius=radius)
-            ),
-            dtype=np.float32,
-        ) / 255.0
+        glow = np.clip(
+            gaussian_blur_float(data["flame"], radius),
+            0.0,
+            1.0,
+        )
         glow_alpha = np.clip(
             glow * context.mask * config.glow * config.intensity * 0.42,
             0.0,

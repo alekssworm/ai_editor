@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from .models import EffectAssets, StyleProfile
+from .spatial import gaussian_blur_float
 
 
 def _rgb_array(image: Image.Image | np.ndarray) -> np.ndarray:
@@ -369,20 +370,7 @@ class ResilientDepthEstimator:
 
 
 def _blur_float_map(value: np.ndarray, radius: float) -> np.ndarray:
-    source = np.asarray(value, dtype=np.float32)
-    minimum = float(np.nanmin(source))
-    maximum = float(np.nanmax(source))
-    span = maximum - minimum
-    if not np.isfinite(span) or span <= 1e-8:
-        return np.full_like(source, minimum, dtype=np.float32)
-    normalized = np.clip((source - minimum) / span, 0.0, 1.0)
-    blurred = np.asarray(
-        Image.fromarray(np.rint(normalized * 255.0).astype(np.uint8), mode="L").filter(
-            ImageFilter.GaussianBlur(radius=max(0.0, float(radius)))
-        ),
-        dtype=np.float32,
-    )
-    return blurred * (span / 255.0) + minimum
+    return gaussian_blur_float(value, radius)
 
 
 def _axis_gradient(value: np.ndarray, axis: int) -> np.ndarray:

@@ -43,6 +43,17 @@ number of full-resolution assets. The default per-renderer limit is 256 MB and
 can be changed with `AI_EDITOR_EFFECT_CACHE_MB` (set it to `0` to disable the
 cache).
 
+Rendering also finds the active mask bounding box, adds a safe sampling margin
+and processes only that region. Cropped assets are cached per `RenderSession`;
+large background areas therefore do not allocate wave, normal or particle
+fields on every frame. Set `AI_EDITOR_EFFECT_ROI=0` for diagnostics, or adjust
+the default 96-pixel margin with `AI_EDITOR_EFFECT_ROI_MARGIN`.
+
+Shared float32 spatial utilities live in `spatial.py`. Water and Fire use the
+same tiled bilinear remap, periodic wave helper and non-quantizing Gaussian
+approximation. This removes the previous private dependency from Fire to Water
+and avoids converting editable flow maps to 8-bit data during smoothing.
+
 Prepare a water layer from the current `shapes.json` format:
 
 ```powershell

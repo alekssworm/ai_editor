@@ -11,71 +11,11 @@ from ..color import srgb_color_to_linear
 from ..context import EffectContext
 from ..layers import EffectFrame, LayeredEffect
 from ..models import EffectAssets
-
-
-def _reflect_coordinates(values: np.ndarray, size: int) -> np.ndarray:
-    if size <= 1:
-        return np.zeros_like(values, dtype=np.float32)
-    maximum = float(size - 1)
-    period = maximum * 2.0
-    folded = np.mod(values, period)
-    return np.where(folded <= maximum, folded, period - folded).astype(np.float32)
-
-
-def _bilinear_remap(image: np.ndarray, map_x: np.ndarray, map_y: np.ndarray) -> np.ndarray:
-    height, width = image.shape[:2]
-    map_x, map_y = np.broadcast_arrays(map_x, map_y)
-    has_channels = image.ndim == 3
-    output_shape = map_x.shape + ((image.shape[2],) if has_channels else ())
-    output = np.empty(output_shape, dtype=np.float32)
-    # Tiling keeps the four gathered RGB neighbours from occupying hundreds of
-    # megabytes at 4K while preserving exactly the same interpolation.
-    for row_start in range(0, map_x.shape[0], 192):
-        row_end = min(map_x.shape[0], row_start + 192)
-        x = _reflect_coordinates(map_x[row_start:row_end], width)
-        y = _reflect_coordinates(map_y[row_start:row_end], height)
-
-        x0 = np.floor(x).astype(np.int32)
-        y0 = np.floor(y).astype(np.int32)
-        x1 = np.minimum(x0 + 1, width - 1)
-        y1 = np.minimum(y0 + 1, height - 1)
-
-        wx = x - x0
-        wy = y - y0
-        if has_channels:
-            wx = wx[..., None]
-            wy = wy[..., None]
-        top = image[y0, x0] * (1.0 - wx) + image[y0, x1] * wx
-        bottom = image[y1, x0] * (1.0 - wx) + image[y1, x1] * wx
-        output[row_start:row_end] = top * (1.0 - wy) + bottom * wy
-    return output
-
-
-def _integrated_flow_coordinates(
-    flow_x: np.ndarray,
-    flow_y: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build continuous approximate streamline coordinates from a dense flow."""
-    height, width = flow_x.shape
-    center_x = width // 2
-    center_y = height // 2
-
-    # Integrate each coordinate along its natural axis, then anchor the scan
-    # lines through the image centre.  Unlike x*flow_x + y*flow_y, a local
-    # direction change cannot multiply a tiny vector change by a large pixel
-    # coordinate and create a phase discontinuity.
-    along = np.cumsum(flow_x, axis=1, dtype=np.float32)
-    along -= along[:, center_x : center_x + 1]
-    row_offsets = np.cumsum(flow_y[:, center_x], dtype=np.float32)
-    row_offsets -= row_offsets[center_y]
-    along += row_offsets[:, None]
-
-    across = np.cumsum(-flow_y, axis=0, dtype=np.float32)
-    across -= across[center_y : center_y + 1, :]
-    column_offsets = np.cumsum(flow_x[center_y, :], dtype=np.float32)
-    column_offsets -= column_offsets[center_x]
-    across += column_offsets[None, :]
-    return along, across
+from ..spatial import (
+    bilinear_remap as _bilinear_remap,
+    integrated_flow_coordinates as _integrated_flow_coordinates,
+    periodic_sine,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,31 +164,33 @@ class WaterWavesLayer:
         # Speed changes amplitude; the integrated coordinates keep phase smooth
         # through bends and reversals in the editable flow field.
         local_phase = phase
-        wave_a = np.sin(
+        wave_a = periodic_sine(
             along
             * (np.pi * 2.0 / config.wavelength)
-            * static["frequency_scale"]
-            - local_phase
-            + static["phase_a"]
+            * static["frequency_scale"],
+            local_phase,
+            offset=static["phase_a"],
         )
-        wave_b = np.sin(
+        wave_b = periodic_sine(
             across
-            * (np.pi * 2.0 / config.secondary_wavelength)
-            - local_phase * 2.0
-            + static["phase_b"]
+            * (np.pi * 2.0 / config.secondary_wavelength),
+            local_phase,
+            temporal_cycles=2,
+            offset=static["phase_b"],
         )
-        wave_c = np.sin(
+        wave_c = periodic_sine(
             (along + across * 0.38)
-            * (np.pi * 2.0 / max(8.0, config.wavelength * 0.46))
-            - local_phase * 3.0
-            + static["phase_c"]
+            * (np.pi * 2.0 / max(8.0, config.wavelength * 0.46)),
+            local_phase,
+            temporal_cycles=3,
+            offset=static["phase_c"],
         )
-        wave_d = np.sin(
+        wave_d = periodic_sine(
             (along * 0.72 - across * 0.54)
-            * (np.pi * 2.0 / max(5.0, config.secondary_wavelength * 0.38))
-            - local_phase * 5.0
-            + static["phase_a"] * 0.7
-            - static["phase_b"] * 0.3
+            * (np.pi * 2.0 / max(5.0, config.secondary_wavelength * 0.38)),
+            local_phase,
+            temporal_cycles=5,
+            offset=static["phase_a"] * 0.7 - static["phase_b"] * 0.3,
         )
         height_field = (
             wave_a * 0.48

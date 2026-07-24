@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from .compositor import EffectApplication, EffectCompositor
+from .cache import CacheInfo
 from .effects.base import EffectRenderer
 from .models import EffectAssets
 
@@ -22,6 +23,9 @@ class RenderSession:
     def register(self, effect: EffectRenderer) -> None:
         with self._lock:
             self._effects[effect.effect_type.lower()] = effect
+
+    def region_cache_info(self) -> CacheInfo:
+        return self._compositor.region_cache_info()
 
     def render_frame(
         self,
@@ -80,4 +84,3 @@ class RenderSession:
             )
             for frame_index in range(frame_count)
         ]
-

@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import tempfile
@@ -22,6 +23,9 @@ from ui_fire_tool import Ui_fire_tool
 from ui_light_tool import Ui_light_tool
 from ui_water_tool import Ui_water_tool
 from ui_weather_tool import Ui_weather_tool
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------
@@ -955,7 +959,7 @@ class AIWindow(QMainWindow):
         self.scene.addItem(widget)
         self.shape_cards[shape_id] = widget
 
-        print(f"[DEBUG] ShapeCard created: ID = {shape_id}")
+        LOGGER.debug("ShapeCard created: id=%s", shape_id)
 
     def _on_card_motion_changed(self, shape_id, motion):
         self.motion_changed.emit(int(shape_id), dict(motion))
@@ -1195,7 +1199,7 @@ class AIWindow(QMainWindow):
 
     def load_tool_panel(self, ui_class):
         self.last_tool_type = ui_class.__name__
-        print(f"[DEBUG] Активирован инструмент: {self.last_tool_type}")
+        LOGGER.debug("Tool activated: %s", self.last_tool_type)
 
         if self._active_tool_widget is not None:
             self.tool_container_layout.removeWidget(self._active_tool_widget)
@@ -1246,7 +1250,7 @@ class AIWindow(QMainWindow):
                     existing_keys.add(editor_key.casefold())
 
         buttons = tool_widget.findChildren(QPushButton)
-        print(f"[DEBUG] Найдено {len(buttons)} кнопок в {ui_class.__name__}")
+        LOGGER.debug("Found %s buttons in %s", len(buttons), ui_class.__name__)
 
         for btn in buttons:
             btn_text = btn.text().strip()
@@ -1271,7 +1275,7 @@ class AIWindow(QMainWindow):
                         effect_type=effect,
                     )
                 )
-                print(f"[DEBUG] Привязан обработчик к кнопке: {btn_text} ({btn_name})")
+                LOGGER.debug("Bound effect button: %s (%s)", btn_text, btn_name)
             elif btn_name.casefold().startswith("main_"):
                 btn.setVisible(False)
 
@@ -1288,22 +1292,22 @@ class AIWindow(QMainWindow):
         *,
         effect_type=None,
     ):
-        print(f"[DEBUG] Нажата кнопка: {button_text} ({button_name})")
+        LOGGER.debug("Effect button clicked: %s (%s)", button_text, button_name)
         selected_id = self.selected_shape_id
         if selected_id is None:
-            print("[DEBUG] ShapeCard не выбран")
+            LOGGER.debug("No ShapeCard selected")
             return
-        print(f"[DEBUG] Выбран ShapeCard ID: {selected_id}")
+        LOGGER.debug("Selected ShapeCard: id=%s", selected_id)
 
         if selected_id not in self.shape_cards:
-            print(f"[DEBUG] ShapeCard с ID {selected_id} не найден")
+            LOGGER.warning("ShapeCard not found: id=%s", selected_id)
             return
 
         proxy = self.shape_cards[selected_id].layout().itemAt(0)
         shape_card = proxy.widget() if proxy else None
 
         if not shape_card:
-            print(f"[DEBUG] [ERROR] Не удалось получить ShapeCard для ID {selected_id}")
+            LOGGER.error("Could not resolve ShapeCard widget: id=%s", selected_id)
             return
 
         tool_type = str(
@@ -1314,19 +1318,26 @@ class AIWindow(QMainWindow):
         is_sub = button_name.lower().startswith('sub_')
 
         if shape_card.tool_type and shape_card.tool_type != tool_type:
-            print(f"[DEBUG] [ERROR] Нельзя смешивать инструменты: {shape_card.tool_type} != {tool_type}")
+            LOGGER.warning(
+                "Cannot mix effect types on one ShapeCard: %s != %s",
+                shape_card.tool_type,
+                tool_type,
+            )
             return
 
         if not shape_card.tool_type:
             shape_card.tool_type = tool_type
-            print(f"[DEBUG] [OK] Назначен tool_type: {tool_type}")
+            LOGGER.debug("Assigned tool_type=%s", tool_type)
 
         if is_main:
             if shape_card.main_function_added:
-                print(f"[DEBUG] [WARN] Главная функция уже добавлена в ShapeCard {selected_id}")
+                LOGGER.warning(
+                    "Main effect already assigned to ShapeCard id=%s",
+                    selected_id,
+                )
                 return
             shape_card.main_function_added = True
-            print(f"[DEBUG] [OK] Добавлена главная функция: {button_text}")
+            LOGGER.debug("Assigned main effect: %s", button_text)
             try:
                 from effect_engine.parameters import motion_profile_from_card
 
@@ -1341,12 +1352,16 @@ class AIWindow(QMainWindow):
                 pass
         elif is_sub:
             if button_name in shape_card.added_subfunctions:
-                print(f"[DEBUG] [WARN] Саб-функция уже добавлена: {button_text} ({button_name})")
+                LOGGER.warning(
+                    "Secondary effect already assigned: %s (%s)",
+                    button_text,
+                    button_name,
+                )
                 return
             shape_card.added_subfunctions.add(button_name)
-            print(f"[DEBUG] [ADD] Добавлена саб-функция: {button_text}")
+            LOGGER.debug("Assigned secondary effect: %s", button_text)
         else:
-            print(f"[DEBUG] [WARN] Неизвестный тип кнопки: {button_text} ({button_name})")
+            LOGGER.warning("Unknown effect button type: %s (%s)", button_text, button_name)
             return
 
         # Добавление параметров
@@ -1792,10 +1807,14 @@ class AIWindow(QMainWindow):
         import os
 
         try:
-            print(f"[DEBUG] backend_client={backend_client.__file__}")
-            print(f"[DEBUG] BASE={getattr(backend_client,'BASE',None)}")
-            print(f"[DEBUG] shapes_json={shapes_json} exists={os.path.exists(shapes_json)}")
-            print(f"[DEBUG] out_mp4={out_mp4}")
+            LOGGER.debug("backend_client=%s", backend_client.__file__)
+            LOGGER.debug("backend base=%s", getattr(backend_client, "BASE", None))
+            LOGGER.debug(
+                "shapes_json=%s exists=%s",
+                shapes_json,
+                os.path.exists(shapes_json),
+            )
+            LOGGER.debug("out_mp4=%s", out_mp4)
         except Exception:
             pass
 
@@ -1805,7 +1824,7 @@ class AIWindow(QMainWindow):
                 if hasattr(self.ui, "pushButton"):
                     self.ui.pushButton.setEnabled(True)
                 try:
-                    print(f"[DEBUG] [RENDER] unexpected response: {res}")
+                    LOGGER.error("Unexpected render response: %r", res)
                 except Exception:
                     pass
                 self._set_render_status("AI render: некорректный ответ", 8000)
@@ -1823,7 +1842,7 @@ class AIWindow(QMainWindow):
                 self.ui.pushButton.setEnabled(True)
                 self.ui.pushButton.setText("Cancel render")
             try:
-                print(f"[DEBUG] [RENDER] job_id={self._svd_job_id}")
+                LOGGER.info("AI render started: job_id=%s", self._svd_job_id)
             except Exception:
                 pass
             self._svd_timer.start(2000)
@@ -1837,7 +1856,7 @@ class AIWindow(QMainWindow):
                 self.render_progress_bar.hide()
             self._set_render_status("AI render: backend не готов", 8000)
             try:
-                print(f"[DEBUG] [RENDER] error: {msg}")
+                LOGGER.warning("AI render request failed: %s", msg)
             except Exception:
                 pass
             QMessageBox.warning(self, "AI render недоступен", str(msg))
@@ -1927,9 +1946,14 @@ class AIWindow(QMainWindow):
     def _on_svd_status_error(self, message: str) -> None:
         self._svd_status_failures += 1
         failure_limit = 3
-        print(
-            f"[DEBUG] [RENDER] status error "
-            f"{self._svd_status_failures}/{failure_limit}: {message}"
+        LOGGER.log(
+            logging.WARNING
+            if self._svd_status_failures >= failure_limit
+            else logging.DEBUG,
+            "AI render status error %s/%s: %s",
+            self._svd_status_failures,
+            failure_limit,
+            message,
         )
         if self._svd_status_failures < failure_limit:
             self._set_render_status(
@@ -1998,7 +2022,7 @@ class AIWindow(QMainWindow):
 
         progress_key = (state, stage, step, steps, current, total)
         if progress_key != self._last_svd_progress_key:
-            print(f"[AI RENDER] {status_text}")
+            LOGGER.info("%s", status_text)
             self._last_svd_progress_key = progress_key
 
         if state == "done":
@@ -2016,7 +2040,7 @@ class AIWindow(QMainWindow):
                 or ""
             )
             try:
-                print(f"[DEBUG] [RENDER] done output={output_path}")
+                LOGGER.info("AI render complete: output=%s", output_path)
             except Exception:
                 pass
             self._set_render_status("AI render: готово", 8000)
@@ -2036,7 +2060,7 @@ class AIWindow(QMainWindow):
                 self.ui.pushButton.setText("AI render")
             err = status.get("error") or "unknown error"
             try:
-                print(f"[DEBUG] [RENDER] error state: {err}")
+                LOGGER.error("AI render failed: %s", err)
             except Exception:
                 pass
             self._set_render_status("AI render: ошибка", 8000)

@@ -46,7 +46,13 @@ from effect_engine.project import (
     serialize_flow_guides,
 )
 from effect_engine.quality import analyze_effect_quality
+from effect_engine.region import effect_region
 from effect_engine.renderer import DeterministicEffectEngine
+from effect_engine.spatial import (
+    bilinear_remap,
+    gaussian_blur_float,
+    periodic_sine,
+)
 from effect_engine.storage import EffectAssetStore
 
 
@@ -77,6 +83,64 @@ class EffectEngineTests(unittest.TestCase):
             effect_type="water",
             seed=seed,
             direction=(1.0, 0.2),
+        )
+
+    def test_float_spatial_utilities_preserve_precision_and_tile_remap(self) -> None:
+        impulse = np.zeros((17, 19), dtype=np.float32)
+        impulse[8, 9] = 1.0
+        blurred = gaussian_blur_float(impulse, 2.4)
+        self.assertEqual(blurred.dtype, np.float32)
+        self.assertEqual(blurred.shape, impulse.shape)
+        self.assertAlmostEqual(float(blurred.sum()), 1.0, places=5)
+        np.testing.assert_allclose(blurred, np.flip(blurred, axis=0), atol=1e-7)
+        np.testing.assert_allclose(blurred, np.flip(blurred, axis=1), atol=1e-7)
+
+        source = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+        y, x = np.mgrid[0:5, 0:7].astype(np.float32)
+        identity = bilinear_remap(source, x, y, tile_rows=2)
+        np.testing.assert_array_equal(identity, source)
+        shifted = bilinear_remap(source, x + 0.5, y, tile_rows=2)
+        self.assertAlmostEqual(float(shifted[2, 2]), 16.5)
+        spatial = np.linspace(-2.0, 2.0, 31, dtype=np.float32)
+        np.testing.assert_allclose(
+            periodic_sine(spatial, 0.0, temporal_cycles=3, offset=0.4),
+            periodic_sine(
+                spatial,
+                np.pi * 2.0,
+                temporal_cycles=3,
+                offset=0.4,
+            ),
+            atol=2e-6,
+        )
+
+    def test_roi_rendering_crops_maps_and_reuses_session_cache(self) -> None:
+        image = sample_image(640, 480)
+        mask = np.zeros((480, 640), dtype=np.float32)
+        mask[210:270, 285:355] = 1.0
+        assets = PreparationPipeline().prepare(
+            image,
+            mask,
+            effect_type="water",
+            seed=74,
+            direction=(1.0, 0.1),
+        )
+        region = effect_region(assets, margin=48)
+        self.assertIsNotNone(region)
+        self.assertLess(region.pixels, assets.width * assets.height // 4)
+        self.assertEqual(region.assets.size, (region.width, region.height))
+
+        session = DeterministicEffectEngine().create_session()
+        first = np.asarray(session.render_frame(image, assets, 0.25))
+        after_first = session.region_cache_info()
+        second = np.asarray(session.render_frame(image, assets, 0.25))
+        after_second = session.region_cache_info()
+        np.testing.assert_array_equal(first, second)
+        self.assertEqual(after_first.entries, 1)
+        self.assertGreater(after_second.hits, after_first.hits)
+        source = np.asarray(image)
+        np.testing.assert_array_equal(
+            first[assets.mask <= 1e-4],
+            source[assets.mask <= 1e-4],
         )
 
     def test_effect_assets_storage_round_trip(self) -> None:

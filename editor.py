@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 
 import backend_client
 
@@ -40,6 +41,9 @@ from effect_preview import start_effect_preview
 from flow_direction_tool import FlowDirectionController
 from effect_engine.project import normalize_direction
 from effect_engine.preparation import create_preparation_pipeline
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -176,8 +180,8 @@ class MainWindow(QMainWindow):
                         masks_dir=masks_dir,
                         out_mp4_path=out_mp4,
                     )
-            except Exception as _e:
-                print("⚠️ Не удалось прокинуть пути в AI panel:", _e)
+            except Exception as error:
+                LOGGER.warning("Could not pass project paths to AI Panel: %s", error)
 
             self.ai_window.show()
             self.ai_window.raise_()

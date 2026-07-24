@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 import atexit
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -19,6 +20,8 @@ import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 import requests
+
+LOGGER = logging.getLogger(__name__)
 
 BASE = os.environ.get("AI_BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
 DEBUG = os.environ.get("AI_BACKEND_DEBUG", "1") not in ("0", "false", "False", "")
@@ -228,7 +231,7 @@ def _log(msg: str, data: Any = None) -> None:
         return
     ts = time.strftime("%H:%M:%S")
     line = f"[CLIENT {ts}] {msg}"
-    print(line, flush=True)
+    LOGGER.info("%s", line)
     # also write to logfile (best-effort)
     try:
         with open(LOGFILE, "a", encoding="utf-8") as f:
@@ -240,7 +243,7 @@ def _log(msg: str, data: Any = None) -> None:
             dump = json.dumps(data, ensure_ascii=False, indent=2)
         except Exception:
             dump = str(data)
-        print(dump, flush=True)
+        LOGGER.debug("%s", dump)
         try:
             with open(LOGFILE, "a", encoding="utf-8") as f:
                 f.write(dump + "\n")
@@ -258,12 +261,14 @@ def _req(
     rid = uuid.uuid4().hex[:8]
 
     if DEBUG and not quiet:
-        try:
-            print(f"[DEBUG] [CLIENT {rid}] {method} {url}")
-            if isinstance(json_body, dict):
-                print(f"[DEBUG] [CLIENT {rid}] shapes_json={json_body.get('shapes_json')} out_mp4={json_body.get('out_mp4')}")
-        except Exception:
-            pass
+        LOGGER.debug("[CLIENT %s] %s %s", rid, method, url)
+        if isinstance(json_body, dict):
+            LOGGER.debug(
+                "[CLIENT %s] shapes_json=%s out_mp4=%s",
+                rid,
+                json_body.get("shapes_json"),
+                json_body.get("out_mp4"),
+            )
 
     try:
         if timeout is None:
@@ -279,13 +284,17 @@ def _req(
         )
     except (requests.ConnectionError, requests.Timeout) as error:
         if DEBUG:
-            print(f"[DEBUG] [CLIENT {rid}] backend unavailable: {type(error).__name__}")
+            LOGGER.debug(
+                "[CLIENT %s] backend unavailable: %s",
+                rid,
+                type(error).__name__,
+            )
         raise BackendUnavailableError(_backend_unavailable_message()) from error
     except requests.RequestException as error:
         raise BackendRequestError(f"Ошибка запроса к AI backend: {error}") from error
 
     if DEBUG and not quiet:
-        print(f"[DEBUG] [CLIENT {rid}] RESP {response.status_code}")
+        LOGGER.debug("[CLIENT %s] response=%s", rid, response.status_code)
 
     try:
         response.raise_for_status()
