@@ -281,7 +281,12 @@ class FireGlowLayer:
             1.0,
         )
         glow_alpha = np.clip(
-            glow * context.mask * config.glow * config.intensity * 0.42,
+            glow
+            * context.mask
+            * np.clip(1.0 - context.obstacles * 0.72, 0.0, 1.0)
+            * config.glow
+            * config.intensity
+            * 0.42,
             0.0,
             0.42,
         )[..., None]
@@ -345,7 +350,10 @@ class FireEmberLayer:
         for index in range(len(x)):
             px = int(np.clip(round(x[index]), 0, width - 1))
             py = int(np.clip(round(y[index]), 0, height - 1))
-            if context.mask[py, px] <= 0.05:
+            if (
+                context.mask[py, px] <= 0.05
+                or context.obstacles[py, px] >= 0.75
+            ):
                 continue
             value = int(round(255.0 * particles["brightness"][index]))
             painter.ellipse((px - 1, py - 1, px + 1, py + 1), fill=value)
@@ -356,6 +364,7 @@ class FireEmberLayer:
         alpha = np.clip(
             alpha
             * context.mask
+            * np.clip(1.0 - context.obstacles, 0.0, 1.0)
             * config.ember_density
             * config.intensity
             * 0.7,

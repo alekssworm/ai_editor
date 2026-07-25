@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 from .cache import ByteBudgetLRU, CacheInfo, effect_cache_budget_bytes
+from .color import linear_to_srgb_u8
 from .context import EffectContext
 from .effects.base import EffectRenderer
 from .layers import EffectFrame
@@ -79,6 +80,19 @@ class EffectCompositor:
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         time: float,
     ) -> Image.Image:
+        return Image.fromarray(
+            linear_to_srgb_u8(
+                self.compose_linear(image, applications, time)
+            ),
+            mode="RGB",
+        )
+
+    def compose_linear(
+        self,
+        image: Image.Image | np.ndarray,
+        applications: list[EffectApplication] | tuple[EffectApplication, ...],
+        time: float,
+    ) -> np.ndarray:
         # ROI composition never reads the full-size ``original`` buffer. Avoid
         # retaining a second 4K float image; each active region gets its own
         # immutable source copy immediately before the effect is applied.
@@ -128,4 +142,4 @@ class EffectCompositor:
             )
             renderer.apply(region_frame, context)
             frame.current[y_slice, x_slice] = region_frame.current
-        return frame.to_image()
+        return np.clip(frame.current, 0.0, 1.0)

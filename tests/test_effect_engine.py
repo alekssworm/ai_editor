@@ -54,6 +54,7 @@ from effect_engine.spatial import (
     periodic_sine,
 )
 from effect_engine.storage import EffectAssetStore
+from effect_engine.temporal import TemporalSampling
 
 
 def sample_image(width: int = 48, height: int = 36) -> Image.Image:
@@ -142,6 +143,121 @@ class EffectEngineTests(unittest.TestCase):
             first[assets.mask <= 1e-4],
             source[assets.mask <= 1e-4],
         )
+
+    def test_temporal_sampling_is_periodic_deterministic_and_visible(self) -> None:
+        assets = self.prepare(seed=93)
+        engine = DeterministicEffectEngine()
+        sampling = TemporalSampling.for_frame(
+            samples=3,
+            shutter_fraction=0.65,
+            frame_count=24,
+        )
+        self.assertEqual(len(sampling.times(0.0)), 3)
+        self.assertEqual(sampling.times(0.0), sampling.times(1.0))
+        blurred = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.31,
+                temporal_sampling=sampling,
+            )
+        )
+        repeated = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.31,
+                temporal_sampling=sampling,
+            )
+        )
+        loop_start = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.0,
+                temporal_sampling=sampling,
+            )
+        )
+        loop_end = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                1.0,
+                temporal_sampling=sampling,
+            )
+        )
+        sharp = np.asarray(engine.render_frame(self.image, assets, 0.31))
+        np.testing.assert_array_equal(blurred, repeated)
+        np.testing.assert_array_equal(loop_start, loop_end)
+        self.assertFalse(np.array_equal(blurred, sharp))
+        np.testing.assert_array_equal(
+            blurred[assets.mask <= 1e-4],
+            np.asarray(self.image)[assets.mask <= 1e-4],
+        )
+        with self.assertRaisesRegex(ValueError, "between 1 and 16"):
+            TemporalSampling(samples=17, shutter=0.1)
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            TemporalSampling(samples=2.5, shutter=0.1)
+        with self.assertRaisesRegex(ValueError, "shutter_fraction"):
+            TemporalSampling.for_frame(
+                samples=2,
+                shutter_fraction=1.2,
+                frame_count=24,
+            )
+
+    def test_rain_and_fire_respect_protected_occlusion_zones(self) -> None:
+        image = sample_image(96, 72)
+        mask = np.ones((72, 96), dtype=np.float32)
+        source = np.asarray(image, dtype=np.int16)
+        for effect_type, params in (
+            ("rain", {"density": 1.0, "mist": 0.5, "opacity": 0.9}),
+            (
+                "fire",
+                {
+                    "intensity": 1.0,
+                    "glow": 0.7,
+                    "ember_density": 0.7,
+                },
+            ),
+        ):
+            clear = PreparationPipeline().prepare(
+                image,
+                mask,
+                effect_type=effect_type,
+                seed=37,
+                direction=(0.0, -1.0),
+            )
+            obstacles = clear.obstacles.copy()
+            obstacles[20:52, 32:64] = 1.0
+            blocked = EffectAssets(
+                effect_type=clear.effect_type,
+                seed=clear.seed,
+                mask=clear.mask,
+                depth=clear.depth,
+                flow=clear.flow,
+                speed=clear.speed,
+                obstacles=obstacles,
+                foam=clear.foam,
+                style=clear.style,
+                textures=clear.textures,
+                metadata=clear.metadata,
+            )
+            engine = DeterministicEffectEngine()
+            clear_frame = np.asarray(
+                engine.render_frame(image, clear, 0.42, params=params),
+                dtype=np.int16,
+            )
+            blocked_frame = np.asarray(
+                engine.render_frame(image, blocked, 0.42, params=params),
+                dtype=np.int16,
+            )
+            clear_change = np.abs(clear_frame - source)[20:52, 32:64].mean()
+            blocked_change = np.abs(blocked_frame - source)[20:52, 32:64].mean()
+            self.assertLess(
+                float(blocked_change),
+                float(clear_change) * 0.55,
+                effect_type,
+            )
 
     def test_effect_assets_storage_round_trip(self) -> None:
         assets = self.prepare()

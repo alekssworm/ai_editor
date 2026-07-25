@@ -46,12 +46,19 @@ class EffectPreviewDialogTests(unittest.TestCase):
                 fps=12,
                 params={"strength": 4.0},
                 debug_maps={"Speed": Image.new("RGB", (32, 24), "red")},
+                source_frame=Image.new("RGB", (32, 24), "#010203"),
             )
             dialog = EffectPreviewDialog(result)
 
             self.assertTrue(dialog._timer.isActive())
             self.assertEqual(dialog._frame_index, 0)
             self.assertEqual(dialog.map_selector.itemText(1), "Speed")
+            self.assertFalse(dialog.before_button.isHidden())
+            dialog.before_button.setChecked(True)
+            self.assertEqual(dialog.before_button.text(), "After")
+            self.assertFalse(dialog.play_button.isEnabled())
+            dialog.before_button.setChecked(False)
+            self.assertEqual(dialog.before_button.text(), "Before")
             dialog.map_selector.setCurrentText("Speed")
             self.assertTrue(dialog.play_button.isEnabled())
             self.assertTrue(dialog.overlay_opacity.isEnabled())
@@ -90,7 +97,11 @@ class EffectPreviewDialogTests(unittest.TestCase):
             ):
                 dialog._export_mp4()
 
-            callback.assert_called_once_with(str(output))
+            callback.assert_called_once_with(
+                str(output),
+                temporal_samples=2,
+                shutter_fraction=0.5,
+            )
             self.assertIn("Export complete", dialog.status_label.text())
             self.assertTrue(dialog.export_button.isEnabled())
             information.assert_called_once()

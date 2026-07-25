@@ -63,10 +63,16 @@ python -m effect_engine prepare --project path\to\shapes.json --shape-id 1 --pre
 Render a three-second loop:
 
 ```powershell
-python -m effect_engine render --project path\to\shapes.json --assets path\to\effect_assets\shape_1 --preset river --output result.mp4 --frames 72 --fps 24
+python -m effect_engine render --project path\to\shapes.json --assets path\to\effect_assets\shape_1 --preset river --output result.mp4 --frames 72 --fps 24 --temporal-samples 2 --shutter 0.5
 ```
 
 The renderer samples `t = frame_index / frame_count`; it never writes a duplicate final frame. Internally every animation phase uses periodic functions and normalizes `t` with modulo, so the state immediately after the last frame is exactly the state at `t=0`.
+
+MP4 export uses two deterministic temporal samples by default. Sub-frames are
+sampled symmetrically within half of one frame, wrapped around the loop seam and
+averaged in linear RGB. This adds motion blur to fast water, rain and embers
+without dark sRGB blending or a discontinuity at `t=0`. Use
+`--temporal-samples 1 --shutter 0` for the fastest sharp export.
 
 ## Presets
 
@@ -98,7 +104,9 @@ smaller 640-pixel copy of those maps as an 18-frame loop, so preview speed does
 not reduce the quality of assets kept for export. Press `Export MP4 (24 fps)`
 inside the preview window for a full-resolution 72-frame H.264 loop. The export
 streams frames to an atomic temporary file at CRF 18 instead of keeping the
-whole video in memory.
+whole video in memory. `Before` temporarily shows the unmodified preview source;
+the button changes to `After` to return to the animated result. The adjacent
+Fast/Balanced/High selector uses 1, 2 or 4 temporal samples per exported frame.
 
 The deterministic renderer supports Water, Weather → Rain and Fire. Fire
 includes Campfire, Torch, Candle and Lava presets. Fog, wind, smoke and light
@@ -120,6 +128,8 @@ Renderer and editor-panel registration share one manifest in `plugins.py`, so a
 new effect is not registered independently in two different code paths.
 Fire is the third plugin and uses the same manifest, preset and schema path
 without special-casing the renderer or ShapeCard.
+Rain streaks/mist and Fire flames/embers now respect the prepared obstacle map,
+so protected foreground objects occlude particles instead of being painted over.
 
 ### Flow direction
 

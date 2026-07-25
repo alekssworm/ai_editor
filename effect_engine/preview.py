@@ -28,6 +28,7 @@ class PreviewResult:
     debug_maps: dict[str, Image.Image] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     provider_states: dict[str, dict[str, Any]] = field(default_factory=dict)
+    source_frame: Image.Image | None = None
 
 
 def _speed_colormap(speed: np.ndarray) -> np.ndarray:
@@ -229,6 +230,7 @@ def build_project_preview(
             ).items()
         ),
         provider_states=dict(assets.metadata.get("provider_states") or {}),
+        source_frame=image.copy(),
     )
 
 
@@ -245,6 +247,8 @@ def export_project_loop(
     seed: int = 1,
     use_ai_preparation: bool | None = None,
     prepared_assets_dir: str | Path | None = None,
+    temporal_samples: int = 2,
+    shutter_fraction: float = 0.5,
 ) -> Path:
     """Render a full-resolution deterministic loop directly to an H.264 file."""
     path, project = load_project(project_path)
@@ -282,4 +286,6 @@ def export_project_loop(
         fps=fps,
         crf=crf,
         params=params,
+        temporal_samples=temporal_samples,
+        shutter_fraction=shutter_fraction,
     )

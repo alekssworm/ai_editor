@@ -44,7 +44,7 @@ class EffectPreviewDialog(QDialog):
         result: PreviewResult,
         parent=None,
         *,
-        export_callback: Callable[[str], Path] | None = None,
+        export_callback: Callable[..., Path] | None = None,
         default_export_path: str | Path | None = None,
     ) -> None:
         super().__init__(parent)
@@ -53,6 +53,11 @@ class EffectPreviewDialog(QDialog):
         self.resize(760, 560)
 
         self._frames = [_to_qimage(frame) for frame in result.frames]
+        self._source_frame = (
+            _to_qimage(result.source_frame)
+            if result.source_frame is not None
+            else None
+        )
         self._debug_maps = {
             name: _to_qimage(image) for name, image in result.debug_maps.items()
         }
@@ -94,6 +99,11 @@ class EffectPreviewDialog(QDialog):
 
         self.play_button = QPushButton("Pause")
         self.play_button.clicked.connect(self._toggle_playback)
+        self.before_button = QPushButton("Before")
+        self.before_button.setCheckable(True)
+        self.before_button.setVisible(self._source_frame is not None)
+        self.before_button.setToolTip("Toggle the original image for comparison")
+        self.before_button.toggled.connect(self._toggle_before)
         self.map_selector = QComboBox()
         self.map_selector.addItem("Effect")
         self.map_selector.addItems(list(self._debug_maps))
@@ -109,10 +119,20 @@ class EffectPreviewDialog(QDialog):
         self.overlay_opacity.valueChanged.connect(self._show_current_frame)
         self.export_button = QPushButton("Export MP4 (24 fps)")
         self.export_button.setToolTip(
-            "Full-resolution deterministic export: 72 frames, H.264 CRF 18"
+            "Full-resolution deterministic export: 72 frames, H.264 CRF 18, "
+            "2-sample linear motion blur"
         )
         self.export_button.clicked.connect(self._export_mp4)
         self.export_button.setVisible(export_callback is not None)
+        self.export_quality = QComboBox()
+        self.export_quality.addItem("Fast · 1×", 1)
+        self.export_quality.addItem("Balanced · 2×", 2)
+        self.export_quality.addItem("High · 4×", 4)
+        self.export_quality.setCurrentIndex(1)
+        self.export_quality.setVisible(export_callback is not None)
+        self.export_quality.setToolTip(
+            "Temporal samples per exported frame; higher values improve fast motion"
+        )
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.close)
 
@@ -122,7 +142,9 @@ class EffectPreviewDialog(QDialog):
         controls.addWidget(QLabel("Overlay"))
         controls.addWidget(self.overlay_opacity)
         controls.addStretch(1)
+        controls.addWidget(self.export_quality)
         controls.addWidget(self.export_button)
+        controls.addWidget(self.before_button)
         controls.addWidget(self.play_button)
         controls.addWidget(close_button)
 
@@ -137,6 +159,19 @@ class EffectPreviewDialog(QDialog):
         self._show_current_frame()
 
     def _show_current_frame(self) -> None:
+        if self.before_button.isChecked() and self._source_frame is not None:
+            image = self._source_frame
+            self.play_button.setEnabled(False)
+            self.overlay_opacity.setEnabled(False)
+            pixmap = QPixmap.fromImage(image)
+            self.preview_label.setPixmap(
+                pixmap.scaled(
+                    self.preview_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+            return
         selected_map = self.map_selector.currentText()
         if selected_map != "Effect" and selected_map in self._debug_maps:
             if self._frames:
@@ -164,6 +199,10 @@ class EffectPreviewDialog(QDialog):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+    def _toggle_before(self, checked: bool) -> None:
+        self.before_button.setText("After" if checked else "Before")
+        self._show_current_frame()
 
     def _next_frame(self) -> None:
         if not self._frames:
@@ -223,6 +262,8 @@ class EffectPreviewDialog(QDialog):
             on_ready,
             on_error,
             output_path,
+            temporal_samples=int(self.export_quality.currentData()),
+            shutter_fraction=0.5,
         )
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -307,7 +348,12 @@ def start_effect_preview(window) -> None:
                 previous.close()
             except RuntimeError:
                 pass
-        def export_callback(output_path: str) -> Path:
+        def export_callback(
+            output_path: str,
+            *,
+            temporal_samples: int = 2,
+            shutter_fraction: float = 0.5,
+        ) -> Path:
             return export_project_loop(
                 project_path,
                 shape_id,
@@ -320,6 +366,8 @@ def start_effect_preview(window) -> None:
                 seed=shape_id,
                 use_ai_preparation=use_ai_preparation,
                 prepared_assets_dir=result.assets_dir,
+                temporal_samples=temporal_samples,
+                shutter_fraction=shutter_fraction,
             )
 
         default_export_path = Path(project_path).with_name(

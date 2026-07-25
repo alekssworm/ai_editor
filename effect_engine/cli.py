@@ -43,6 +43,18 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--preset", default=None)
     render.add_argument("--strength", type=float, default=None)
     render.add_argument("--opacity", type=float, default=None)
+    render.add_argument(
+        "--temporal-samples",
+        type=int,
+        default=2,
+        help="Linear-light sub-frame samples per output frame (1-16)",
+    )
+    render.add_argument(
+        "--shutter",
+        type=float,
+        default=0.5,
+        help="Motion-blur shutter as a fraction of one frame (0-1)",
+    )
 
     presets = commands.add_parser("presets", help="List installed effect presets")
     presets.add_argument("--effect", default=None)
@@ -114,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         frame_count=args.frames,
         fps=args.fps,
         params=params,
+        temporal_samples=args.temporal_samples,
+        shutter_fraction=args.shutter,
     )
     print(output.resolve())
     return 0

@@ -16,6 +16,7 @@ from .effects.base import EffectRenderer
 from .models import EffectAssets
 from .plugins import default_effect_plugin_registry
 from .session import RenderSession
+from .temporal import TemporalSampling
 
 
 class DeterministicEffectEngine:
@@ -59,27 +60,47 @@ class DeterministicEffectEngine:
         assets: EffectAssets,
         t: float,
         params: Mapping[str, float] | None = None,
+        *,
+        temporal_sampling: TemporalSampling | None = None,
     ) -> Image.Image:
-        return self._default_session.render_frame(image, assets, t, params=params)
+        return self._default_session.render_frame(
+            image,
+            assets,
+            t,
+            params=params,
+            temporal_sampling=temporal_sampling,
+        )
 
     def render_composite_frame(
         self,
         image: Image.Image | np.ndarray,
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         t: float,
+        *,
+        temporal_sampling: TemporalSampling | None = None,
     ) -> Image.Image:
-        return self._default_session.render_composite_frame(image, applications, t)
+        return self._default_session.render_composite_frame(
+            image,
+            applications,
+            t,
+            temporal_sampling=temporal_sampling,
+        )
 
     def render_composite_frames(
         self,
         image: Image.Image | np.ndarray,
         applications: list[EffectApplication] | tuple[EffectApplication, ...],
         frame_count: int,
+        *,
+        temporal_samples: int = 1,
+        shutter_fraction: float = 0.0,
     ) -> list[Image.Image]:
         return self.create_session().render_composite_frames(
             image,
             applications,
             frame_count,
+            temporal_samples=temporal_samples,
+            shutter_fraction=shutter_fraction,
         )
 
     def render_frames(
@@ -88,12 +109,17 @@ class DeterministicEffectEngine:
         assets: EffectAssets,
         frame_count: int,
         params: Mapping[str, float] | None = None,
+        *,
+        temporal_samples: int = 1,
+        shutter_fraction: float = 0.0,
     ) -> list[Image.Image]:
         return self.create_session().render_frames(
             image,
             assets,
             frame_count,
             params=params,
+            temporal_samples=temporal_samples,
+            shutter_fraction=shutter_fraction,
         )
 
     def export_mp4(
@@ -106,6 +132,8 @@ class DeterministicEffectEngine:
         fps: int = 24,
         crf: int = 18,
         params: Mapping[str, float] | None = None,
+        temporal_samples: int = 2,
+        shutter_fraction: float = 0.5,
     ) -> Path:
         return self.export_composite_mp4(
             image,
@@ -114,6 +142,8 @@ class DeterministicEffectEngine:
             frame_count=frame_count,
             fps=fps,
             crf=crf,
+            temporal_samples=temporal_samples,
+            shutter_fraction=shutter_fraction,
         )
 
     def export_composite_mp4(
@@ -125,6 +155,8 @@ class DeterministicEffectEngine:
         frame_count: int = 72,
         fps: int = 24,
         crf: int = 18,
+        temporal_samples: int = 2,
+        shutter_fraction: float = 0.5,
     ) -> Path:
         if fps <= 0:
             raise ValueError("fps must be positive")
@@ -132,6 +164,11 @@ class DeterministicEffectEngine:
             raise ValueError("frame_count must be at least 2")
         if not 0 <= int(crf) <= 51:
             raise ValueError("crf must be between 0 and 51")
+        sampling = TemporalSampling.for_frame(
+            samples=temporal_samples,
+            shutter_fraction=shutter_fraction,
+            frame_count=frame_count,
+        )
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         temporary = output.with_name(
@@ -163,6 +200,7 @@ class DeterministicEffectEngine:
                     image,
                     applications,
                     frame_index / int(frame_count),
+                    temporal_sampling=sampling,
                 )
                 writer.append_data(np.asarray(frame.convert("RGB"), dtype=np.uint8))
             writer.close()

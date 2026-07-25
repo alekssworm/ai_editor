@@ -29,6 +29,7 @@ from .region import EffectRegion, effect_region
 from .renderer import DeterministicEffectEngine
 from .session import RenderSession
 from .storage import EffectAssetStore
+from .temporal import TemporalSampling
 
 __all__ = [
     "EffectApplication",
@@ -57,6 +58,7 @@ __all__ = [
     "StyleProfile",
     "TransformersDepthEstimator",
     "TransformersMaskRefiner",
+    "TemporalSampling",
     "analyze_effect_quality",
     "effect_region",
     "create_preparation_pipeline",

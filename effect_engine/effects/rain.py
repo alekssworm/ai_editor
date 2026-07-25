@@ -207,7 +207,8 @@ class RainStreakLayer:
 
         streaks = streaks.filter(ImageFilter.GaussianBlur(radius=0.35))
         alpha = np.asarray(streaks, dtype=np.float32) / 255.0
-        alpha *= context.mask * config.opacity
+        visibility = np.clip(1.0 - context.obstacles, 0.0, 1.0)
+        alpha *= context.mask * visibility * config.opacity
         alpha *= 0.7 + context.depth * 0.3
         alpha = np.clip(alpha, 0.0, 0.92)[..., None]
         color = _rain_color(context) * config.brightness
@@ -267,7 +268,11 @@ class RainMistLayer:
             )
         ) * 0.25 + 0.5
         alpha = np.clip(
-            wave * context.mask * config.mist * (0.55 + context.depth * 0.45),
+            wave
+            * context.mask
+            * np.clip(1.0 - context.obstacles * 0.88, 0.0, 1.0)
+            * config.mist
+            * (0.55 + context.depth * 0.45),
             0.0,
             0.35,
         )[..., None]
