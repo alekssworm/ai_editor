@@ -1,0 +1,1494 @@
+
+"""
+Backend for SVD video generation on an NVIDIA GPU.
+
+Endpoints:
+  GET  /health
+  GET  /gpu
+  POST /svd/render        -> start render, returns {"job_id": "..."}
+  GET  /svd/status/{id}   -> get status/progress/result
+
+Run it from the project environment on Windows, WSL, or Linux:
+  python backend_server.py
+"""
+from __future__ import annotations
+
+import json
+import hashlib
+import hmac
+import logging
+import math
+import os
+import re
+import sys
+import copy
+import threading
+import time
+import uuid
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
+from concurrent.futures import ThreadPoolExecutor
+
+app = FastAPI(title="ai_editor backend", version="1.0")
+
+# -----------------------
+# Logging
+# -----------------------
+LOG_LEVEL = os.environ.get("AI_BACKEND_LOGLEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="[%(asctime)s] %(levelname)s %(message)s")
+log = logging.getLogger("ai_backend")
+
+# -----------------------
+# Job store
+# -----------------------
+_jobs: Dict[str, Dict[str, Any]] = {}
+_jobs_lock = threading.RLock()
+_MAX_JOBS = 64
+_executor = ThreadPoolExecutor(max_workers=1)  # 1 job at a time (GPU-safe)
+_svd_pipe = None  # lazy pipeline cache
+
+
+def _now() -> float:
+    return time.time()
+
+
+_OWNER_TOKEN = os.environ.get("AI_BACKEND_OWNER_TOKEN", "").strip()
+try:
+    _IDLE_TIMEOUT = max(
+        0.0, float(os.environ.get("AI_BACKEND_IDLE_TIMEOUT", "0") or 0)
+    )
+except ValueError:
+    _IDLE_TIMEOUT = 0.0
+_last_activity = _now()
+_shutdown_scheduled = False
+
+
+def _append_job_log(job: Dict[str, Any], msg: str) -> None:
+    job["updated_at"] = _now()
+    job.setdefault("log", [])
+    job["log"].append({"ts": job["updated_at"], "msg": msg})
+    # keep last 300 lines
+    if len(job["log"]) > 300:
+        job["log"] = job["log"][-300:]
+
+
+def _active_jobs() -> list[Dict[str, Any]]:
+    with _jobs_lock:
+        return [
+            job
+            for job in _jobs.values()
+            if job.get("state") not in {"done", "error", "cancelled"}
+        ]
+
+
+def _schedule_owned_shutdown(max_wait: float = 30.0) -> None:
+    """Cancel active work, then terminate this owner-scoped backend process."""
+    global _shutdown_scheduled
+    if _shutdown_scheduled:
+        return
+    _shutdown_scheduled = True
+
+    def worker():
+        deadline = time.monotonic() + max(1.0, float(max_wait))
+        while time.monotonic() < deadline:
+            active = _active_jobs()
+            if not active:
+                break
+            for job in active:
+                job["cancel_requested"] = True
+            time.sleep(0.2)
+        # Give the HTTP response time to leave uvicorn before exiting.
+        time.sleep(0.2)
+        os._exit(0)
+
+    threading.Thread(target=worker, name="backend-shutdown", daemon=True).start()
+
+
+def _start_idle_watchdog() -> None:
+    if not _OWNER_TOKEN or _IDLE_TIMEOUT <= 0:
+        return
+
+    def worker():
+        while True:
+            time.sleep(min(5.0, max(1.0, _IDLE_TIMEOUT / 4.0)))
+            if _active_jobs():
+                continue
+            if _now() - _last_activity >= _IDLE_TIMEOUT:
+                log.info("owned backend idle for %.0fs; shutting down", _IDLE_TIMEOUT)
+                _schedule_owned_shutdown(max_wait=2.0)
+                return
+
+    threading.Thread(target=worker, name="backend-idle", daemon=True).start()
+
+
+# -----------------------
+# Path helpers (Windows <-> WSL/Linux)
+# -----------------------
+_drive_re = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def win_to_wsl_path(p: str) -> str:
+    """Convert Windows path like H:\\a\\b or H:/a/b to WSL /mnt/h/a/b.
+    If already looks like /mnt/... or /home/... returns as-is.
+    """
+    if not p:
+        return p
+    p = p.strip()
+    if p.startswith("/"):
+        return p
+    p2 = p.replace("\\", "/")
+    m = _drive_re.match(p2)
+    if not m:
+        return p2
+    drive = m.group(1).lower()
+    rest = m.group(2)
+    return f"/mnt/{drive}/{rest}"
+
+
+def wsl_to_win_path(p: str) -> str:
+    """Convert WSL path /mnt/h/a/b -> H:\\a\\b. Otherwise return as-is."""
+    if not p:
+        return p
+    p = p.strip()
+    m = re.match(r"^/mnt/([a-zA-Z])/(.*)$", p)
+    if not m:
+        return p
+    drive = m.group(1).upper()
+    rest = m.group(2).replace("/", "\\")
+    return f"{drive}:\\{rest}"
+
+
+def runtime_path(path_str: str) -> str:
+    """Return a path usable by the operating system running this backend."""
+    if not path_str:
+        return path_str
+    if os.name == "nt":
+        return os.path.normpath(wsl_to_win_path(path_str))
+    return win_to_wsl_path(path_str)
+
+
+def resolve_maybe_relative(path_str: str, base_dir: str) -> str:
+    """If path is relative, resolve from base_dir."""
+    if not path_str:
+        return path_str
+    # windows relative like "icons/a.png" also counts
+    if path_str.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", path_str):
+        return path_str
+    return os.path.abspath(os.path.join(base_dir, path_str))
+
+
+# -----------------------
+# API models
+# -----------------------
+class RenderRequest(BaseModel):
+    shapes_json: str = Field(..., description="Path to shapes.json (Windows or WSL path)")
+    out_mp4: str = Field(..., description="Output mp4 path (Windows or WSL path)")
+    masks_dir: Optional[str] = Field(None, description="Optional (not used by this backend version)")
+    pieces_dir: Optional[str] = Field(None, description="Optional (not used by this backend version)")
+    fps: int = Field(7, ge=1, le=60)
+    num_frames: int = Field(25, ge=2, le=120)
+    output_fps: Optional[int] = Field(None, ge=1, le=60)
+    output_frames: Optional[int] = Field(None, ge=2, le=240)
+    crf: int = Field(18, ge=0, le=51, description="H.264 constant-rate factor")
+    pad: int = Field(32, ge=0, le=512)
+    feather_px: int = Field(5, ge=0, le=128)
+    seed_base: int = Field(123, ge=0, le=2_147_483_647)
+    render_mode: str = Field("final", description="Quality preset: preview|final")
+    layer_render: bool = Field(True, description="Render per tool/settings layer (faster, fewer seams)")
+    enable_cache: bool = Field(True, description="Cache generated layer frames for reuse")
+
+
+# -----------------------
+# Core SVD render (no Qt, pure PIL/numpy)
+# -----------------------
+def _load_svd_pipeline(device: str = "cuda"):
+    """Lazy load StableVideoDiffusionPipeline once per backend process."""
+    global _svd_pipe
+    if _svd_pipe is not None:
+        return _svd_pipe
+
+    import torch
+    from diffusers import StableVideoDiffusionPipeline
+
+    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+    pipe = StableVideoDiffusionPipeline.from_pretrained(
+        "stabilityai/stable-video-diffusion-img2vid-xt",
+        torch_dtype=dtype,
+        variant="fp16" if dtype == torch.float16 else None,
+    )
+    if device.startswith("cuda"):
+        pipe.to(device)
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+        except Exception:
+            pass
+    else:
+        pipe.to("cpu")
+
+    # offload if available
+    try:
+        pipe.enable_model_cpu_offload()
+    except Exception:
+        pass
+
+    _svd_pipe = pipe
+    return pipe
+
+
+def _svd_device() -> str:
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if os.environ.get("AI_BACKEND_ALLOW_CPU", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return "cpu"
+    raise RuntimeError(
+        "CUDA недоступна. Установите CUDA-сборку PyTorch для NVIDIA GPU "
+        "или задайте AI_BACKEND_ALLOW_CPU=1 для медленного CPU-режима."
+    )
+
+
+def _round_to_multiple(x: int, m: int = 64) -> int:
+    import math
+    return int(math.ceil(x / m) * m)
+
+
+def _mean_edge_color(pil_image_rgb) -> tuple[int, int, int]:
+    """Return mean RGB from all four edges for rectangular images."""
+    import numpy as np
+
+    arr = np.array(pil_image_rgb.convert("RGB"), dtype=np.uint8)
+    edge_pixels = np.concatenate(
+        [
+            arr[0, :, :],
+            arr[-1, :, :],
+            arr[:, 0, :],
+            arr[:, -1, :],
+        ],
+        axis=0,
+    )
+    return tuple(int(value) for value in edge_pixels.mean(axis=0))
+
+
+def _letterbox_for_svd(pil_image_rgb, size: tuple[int, int] = (1024, 576)):
+    """Fit an image into SVD's landscape canvas without stretching it."""
+    from PIL import Image
+
+    source = pil_image_rgb.convert("RGB")
+    source_w, source_h = source.size
+    target_w, target_h = map(int, size)
+    scale = min(target_w / source_w, target_h / source_h)
+    fitted_w = max(1, min(target_w, round(source_w * scale)))
+    fitted_h = max(1, min(target_h, round(source_h * scale)))
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    fitted = source.resize((fitted_w, fitted_h), resampling)
+
+    left = (target_w - fitted_w) // 2
+    top = (target_h - fitted_h) // 2
+    content_box = (left, top, left + fitted_w, top + fitted_h)
+    canvas = Image.new("RGB", (target_w, target_h), _mean_edge_color(source))
+    canvas.paste(fitted, (left, top))
+    return canvas, content_box
+
+
+def _make_shape_mask(shape: Dict[str, Any], size_wh: tuple[int, int], feather_px: int = 5):
+    """Return PIL L mask for shape (full canvas). Supports Rectangle/Circle/Polygon."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    W, H = size_wh
+    mask = Image.new("L", (W, H), 0)
+    d = ImageDraw.Draw(mask)
+
+    t = str(shape.get("type", "")).lower()
+    if t == "polygon":
+        pts = shape.get("points") or []
+        poly = [(int(p["x"]), int(p["y"])) for p in pts if "x" in p and "y" in p]
+        if len(poly) >= 3:
+            d.polygon(poly, fill=255)
+    else:
+        x = int(shape.get("x", 0))
+        y = int(shape.get("y", 0))
+        w = int(shape.get("width", 0))
+        h = int(shape.get("height", 0))
+        box = [x, y, x + w, y + h]
+        if t == "circle":
+            d.ellipse(box, fill=255)
+        else:  # rectangle / unknown -> rectangle
+            d.rectangle(box, fill=255)
+
+    if feather_px and feather_px > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_px))
+    return mask
+
+
+def _crop_with_padding(bg, mask_full, shape: Dict[str, Any], pad: int = 32):
+    """Crop region around shape bbox + padding. Returns (crop_rgb, mask_crop_L, (x0,y0,x1,y1), offx, offy)."""
+    from PIL import Image
+
+    W, H = bg.size
+    t = str(shape.get("type", "")).lower()
+    if t == "polygon":
+        pts = shape.get("points") or []
+        xs = [int(p["x"]) for p in pts if "x" in p]
+        ys = [int(p["y"]) for p in pts if "y" in p]
+        if not xs or not ys:
+            x = y = 0
+            w = h = 0
+        else:
+            x0b, y0b, x1b, y1b = min(xs), min(ys), max(xs), max(ys)
+            x, y, w, h = x0b, y0b, (x1b - x0b), (y1b - y0b)
+    else:
+        x = int(shape.get("x", 0))
+        y = int(shape.get("y", 0))
+        w = int(shape.get("width", 0))
+        h = int(shape.get("height", 0))
+
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(W, x + w + pad)
+    y1 = min(H, y + h + pad)
+
+    crop = bg.crop((x0, y0, x1, y1)).convert("RGB")
+    mask_crop = mask_full.crop((x0, y0, x1, y1)).convert("L")
+    offx, offy = x - x0, y - y0
+    return crop, mask_crop, (x0, y0, x1, y1), offx, offy
+
+
+def _alpha_blend(dst_rgba_np, src_rgb_pil, alpha_mask_L_pil, top_left_xy):
+    """Overlay src_rgb onto dst_rgba using alpha mask at position.
+    Robust to size mismatches and out-of-bounds placement.
+    """
+    import numpy as np
+    x0, y0 = map(int, top_left_xy)
+    dst_h, dst_w = dst_rgba_np.shape[:2]
+
+    src_pil = src_rgb_pil.convert("RGB")
+    a_pil = alpha_mask_L_pil.convert("L")
+
+    a = np.array(a_pil, dtype=np.float32) / 255.0
+    h, w = a.shape
+
+    if src_pil.size != (w, h):
+        src_pil = src_pil.resize((w, h))
+    src = np.array(src_pil, dtype=np.float32)
+
+    dx0 = max(0, x0)
+    dy0 = max(0, y0)
+    dx1 = min(dst_w, x0 + w)
+    dy1 = min(dst_h, y0 + h)
+    if dx1 <= dx0 or dy1 <= dy0:
+        return dst_rgba_np
+
+    sx0 = dx0 - x0
+    sy0 = dy0 - y0
+    ow = dx1 - dx0
+    oh = dy1 - dy0
+
+    src_crop = src[sy0:sy0 + oh, sx0:sx0 + ow, :]
+    a_crop = a[sy0:sy0 + oh, sx0:sx0 + ow][..., None]
+
+    roi = dst_rgba_np[dy0:dy0 + oh, dx0:dx0 + ow, :].astype(np.float32)
+    roi[..., :3] = src_crop * a_crop + roi[..., :3] * (1.0 - a_crop)
+    roi[..., 3] = 255
+    dst_rgba_np[dy0:dy0 + oh, dx0:dx0 + ow, :] = roi.astype(np.uint8)
+    return dst_rgba_np
+
+
+
+def _svd_generate_frames(
+    pipe,
+    pil_image_rgb,
+    fps: int,
+    num_frames: int,
+    seed: int,
+    motion_bucket_id: int = 127,
+    noise_aug_strength: float = 0.02,
+    decode_chunk_size: int = 2,
+    progress_callback=None,
+):
+    """Generate frames with SVD for a single input image.
+
+    Some SVD pipelines output a fixed resolution regardless of input.
+    We always resize frames back to the original input size so masks align.
+    """
+    import torch
+    gen_device = "cuda" if torch.cuda.is_available() else "cpu"
+    generator = torch.Generator(device=gen_device).manual_seed(int(seed))
+
+    from PIL import Image
+
+    w, h = pil_image_rgb.size
+    target_size = (1024, 576)
+    img, content_box = _letterbox_for_svd(pil_image_rgb, target_size)
+
+    out = pipe(
+        img,
+        height=target_size[1],
+        width=target_size[0],
+        num_frames=num_frames,
+        fps=fps,
+        generator=generator,
+        motion_bucket_id=int(motion_bucket_id),
+        noise_aug_strength=float(noise_aug_strength),
+        decode_chunk_size=int(decode_chunk_size),
+        callback_on_step_end=progress_callback,
+    )
+    frames = out.frames[0]
+
+    # Remove letterboxing and restore the exact patch size for mask alignment.
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    frames = [
+        frame.convert("RGB").crop(content_box).resize((w, h), resampling)
+        for frame in frames
+    ]
+    return frames
+
+
+def _card_to_svd_settings(
+    card: Optional[Dict[str, Any]], fallback_direction=None
+):
+    """Map a UI card to SVD generation and deterministic motion settings."""
+    motion_bucket_id = 127
+    noise_aug_strength = 0.02
+    alpha_scale = 0.75
+
+    from effect_engine.project import normalize_direction
+
+    motion = (card or {}).get("motion") or {}
+    direction = None
+    strength = 0.0
+    cycles = 1
+    if isinstance(motion, dict):
+        direction = normalize_direction(motion.get("direction"))
+        try:
+            strength = min(32.0, max(0.0, float(motion.get("strength", 4.0))))
+        except (TypeError, ValueError):
+            strength = 4.0
+        try:
+            cycles = min(8, max(1, int(motion.get("cycles", 1))))
+        except (TypeError, ValueError):
+            cycles = 1
+    if direction is None:
+        direction = normalize_direction(fallback_direction)
+        if direction is not None and not motion:
+            strength = 4.0
+
+    main = (card or {}).get("main") or {}
+    params = main.get("params") or {}
+    intensity = str(params.get("intensity", "normal")).lower()
+    randomness = str(params.get("randomness", "normal")).lower()
+    opacity = str(params.get("opacity", "normal")).lower()
+
+    # NOTE: slightly more conservative defaults => less flicker/darkening on most assets.
+    motion_bucket_id = {"weak": 80, "normal": 96, "strong": 127}.get(intensity, 96)
+    noise_aug_strength = {"weak": 0.008, "normal": 0.015, "strong": 0.03}.get(randomness, 0.015)
+    alpha_scale = {"weak": 0.55, "normal": 0.75, "strong": 1.0}.get(opacity, 0.75)
+    from effect_engine.parameters import motion_profile_from_card
+
+    profile = motion_profile_from_card(card)
+    strength = min(strength, float(profile["max_strength"]))
+    cycles = min(cycles, int(profile["max_cycles"]))
+    return (
+        motion_bucket_id,
+        noise_aug_strength,
+        alpha_scale,
+        direction,
+        strength,
+        cycles,
+    )
+
+
+def _shape_bbox(sh: Dict[str, Any]) -> Optional[tuple[int, int, int, int]]:
+    """Return (x, y, w, h) for the shape, supporting polygons."""
+    try:
+        t = str(sh.get("type", "")).lower()
+        if t == "polygon":
+            pts = sh.get("points") or []
+            xs = [int(p["x"]) for p in pts if "x" in p]
+            ys = [int(p["y"]) for p in pts if "y" in p]
+            if not xs or not ys:
+                return None
+            x0b, y0b, x1b, y1b = min(xs), min(ys), max(xs), max(ys)
+            w = max(0, x1b - x0b)
+            h = max(0, y1b - y0b)
+            return (x0b, y0b, w, h)
+        x = int(sh.get("x", 0))
+        y = int(sh.get("y", 0))
+        w = int(sh.get("width", 0))
+        h = int(sh.get("height", 0))
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    except Exception:
+        return None
+
+
+def _mask_shrink_and_feather(mask_L, *, shrink_px: int, feather_px: int):
+    """Shrink mask a little (reduce edge halos), then feather."""
+    from PIL import ImageFilter
+
+    m = mask_L.convert("L")
+    if shrink_px and shrink_px > 0:
+        # MinFilter acts like erosion for white-on-black masks.
+        # size must be odd; 3 ~ 1px, 5 ~ 2px.
+        size = 2 * int(shrink_px) + 1
+        size = max(3, size | 1)
+        m = m.filter(ImageFilter.MinFilter(size=size))
+    if feather_px and feather_px > 0:
+        m = m.filter(ImageFilter.GaussianBlur(radius=float(feather_px)))
+    return m
+
+
+def _prepare_focus_patch(patch_rgb, mask_hard_L, *, blur_outside_px: int = 8):
+    """Blur everything OUTSIDE mask so SVD focuses on the region."""
+    from PIL import Image, ImageFilter
+
+    blur = patch_rgb.filter(ImageFilter.GaussianBlur(radius=float(blur_outside_px)))
+    # composite: inside mask -> original, outside -> blur
+    return Image.composite(patch_rgb, blur, mask_hard_L.convert("L"))
+
+
+def _color_match_frame(frame_rgb, ref_rgb, mask_L, *, max_shift: int = 20):
+    """Match mean RGB inside mask to reduce brightness/color drift."""
+    import numpy as np
+    from PIL import Image
+
+    fr = np.array(frame_rgb.convert("RGB"), dtype=np.int16)
+    rr = np.array(ref_rgb.convert("RGB"), dtype=np.int16)
+    m = np.array(mask_L.convert("L"), dtype=np.uint8)
+    idx = m > 16
+    if idx.sum() < 64:
+        return frame_rgb
+
+    # means inside mask
+    fr_m = fr[idx].mean(axis=0)
+    rr_m = rr[idx].mean(axis=0)
+    shift = np.clip(rr_m - fr_m, -max_shift, max_shift).astype(np.int16)
+    fr2 = np.clip(fr + shift[None, None, :], 0, 255).astype(np.uint8)
+    return Image.fromarray(fr2, mode="RGB")
+
+
+def _effect_profile_id(card: Optional[Dict[str, Any]]) -> str:
+    card = card or {}
+    main = card.get("main") or {}
+    raw = card.get("preset_id") or main.get("key") or main.get("name") or "default"
+    value = str(raw).strip().lower().replace(" ", "_")
+    if "still" in value or "calm" in value:
+        return "still_water"
+    if "waterfall" in value:
+        return "waterfall"
+    if "fast" in value and "river" in value:
+        return "fast_river"
+    if "river" in value:
+        return "river"
+    return value
+
+
+def _structure_preservation_profile(profile_id: str) -> tuple[float, float, float]:
+    """Return low-frequency mix, detail mix and maximum per-channel change."""
+    profiles = {
+        # Calm water should move as texture, not be re-painted by SVD.
+        "still_water": (0.03, 0.22, 18.0),
+        "river": (0.08, 0.36, 30.0),
+        "fast_river": (0.12, 0.46, 40.0),
+        "waterfall": (0.18, 0.56, 52.0),
+    }
+    return profiles.get(profile_id, (0.10, 0.42, 36.0))
+
+
+def _preserve_reference_structure(
+    frame_rgb,
+    reference_rgb,
+    *,
+    low_frequency_mix: float,
+    detail_mix: float,
+    max_change: float,
+):
+    """Suppress SVD hallucinations while retaining animated texture changes."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    frame = frame_rgb.convert("RGB")
+    reference = reference_rgb.convert("RGB")
+    if frame.size != reference.size:
+        frame = frame.resize(reference.size, getattr(Image, "Resampling", Image).LANCZOS)
+
+    radius = min(12.0, max(2.0, min(reference.size) / 24.0))
+    frame_arr = np.array(frame, dtype=np.float32)
+    reference_arr = np.array(reference, dtype=np.float32)
+    frame_low = np.array(
+        frame.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32
+    )
+    reference_low = np.array(
+        reference.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32
+    )
+
+    low_delta = frame_low - reference_low
+    detail_delta = (frame_arr - frame_low) - (reference_arr - reference_low)
+    delta = (
+        low_delta * float(low_frequency_mix)
+        + detail_delta * float(detail_mix)
+    )
+    delta = np.clip(delta, -float(max_change), float(max_change))
+    result = np.clip(reference_arr + delta, 0, 255).astype(np.uint8)
+    return Image.fromarray(result, mode="RGB")
+
+
+def _temporal_smooth_frames(frames_rgb, mask_L, *, strength: float = 0.15):
+    """Simple EMA smoothing inside mask to reduce flicker."""
+    import numpy as np
+    from PIL import Image
+
+    if not frames_rgb:
+        return frames_rgb
+    m = np.array(mask_L.convert("L"), dtype=np.float32) / 255.0
+    if m.max() < 1e-3:
+        return frames_rgb
+
+    prev = np.array(frames_rgb[0].convert("RGB"), dtype=np.float32)
+    out = [frames_rgb[0]]
+    w = (strength * m)[..., None]
+    for f in frames_rgb[1:]:
+        cur = np.array(f.convert("RGB"), dtype=np.float32)
+        sm = cur * (1.0 - w) + prev * w
+        sm_u8 = np.clip(sm, 0, 255).astype(np.uint8)
+        img = Image.fromarray(sm_u8, mode="RGB")
+        out.append(img)
+        prev = sm
+    return out
+
+
+def _apply_directional_loop(
+    frames_rgb,
+    direction,
+    *,
+    amplitude_px: float = 4.0,
+    cycles: int = 1,
+):
+    """Apply a deterministic, seamless directional motion bias to SVD frames."""
+    import numpy as np
+    from PIL import Image
+    from effect_engine.project import normalize_direction
+
+    normalized = normalize_direction(direction)
+    if not frames_rgb or normalized is None or amplitude_px <= 0:
+        return frames_rgb
+
+    dx, dy = normalized
+    perpendicular = (-dy, dx)
+    frame_count = len(frames_rgb)
+    loop_cycles = min(8, max(1, int(cycles)))
+    amplitude = min(32.0, max(0.0, float(amplitude_px)))
+    result = []
+    for index, frame in enumerate(frames_rgb):
+        phase = math.tau * loop_cycles * index / frame_count
+        along = math.sin(phase) * amplitude
+        across = (1.0 - math.cos(phase)) * amplitude * 0.18
+        offset_x = round(dx * along + perpendicular[0] * across)
+        offset_y = round(dy * along + perpendicular[1] * across)
+        array = np.asarray(frame.convert("RGB"), dtype=np.uint8)
+        pad_x, pad_y = abs(offset_x), abs(offset_y)
+        if pad_x == 0 and pad_y == 0:
+            result.append(frame.convert("RGB"))
+            continue
+        mode = "reflect" if array.shape[0] > 1 and array.shape[1] > 1 else "edge"
+        padded = np.pad(array, ((pad_y, pad_y), (pad_x, pad_x), (0, 0)), mode=mode)
+        start_x = pad_x - offset_x
+        start_y = pad_y - offset_y
+        shifted = padded[
+            start_y : start_y + array.shape[0],
+            start_x : start_x + array.shape[1],
+        ]
+        result.append(Image.fromarray(shifted, mode="RGB"))
+    return result
+
+
+def _make_seamless_ping_pong(frames_rgb):
+    """Turn a drifting generated clip into a deterministic loop without a hard cut."""
+    if len(frames_rgb) < 3:
+        return frames_rgb
+    frame_count = len(frames_rgb)
+    last_index = frame_count - 1
+    result = []
+    for index in range(frame_count):
+        phase = 2.0 * index / frame_count
+        source_phase = phase if phase <= 1.0 else 2.0 - phase
+        source_index = min(last_index, max(0, round(source_phase * last_index)))
+        result.append(frames_rgb[source_index].copy())
+    return result
+
+
+def _iter_interpolated_loop_frames(frames, output_count: int):
+    """Yield a temporally resampled loop without duplicating its endpoint."""
+    import numpy as np
+
+    if not frames:
+        return
+    target = max(2, int(output_count))
+    if target == len(frames):
+        for frame in frames:
+            yield np.asarray(frame, dtype=np.uint8)
+        return
+
+    arrays = [np.asarray(frame, dtype=np.uint8) for frame in frames]
+    source_count = len(arrays)
+    for output_index in range(target):
+        position = output_index * source_count / target
+        left = int(math.floor(position)) % source_count
+        right = (left + 1) % source_count
+        amount = np.float32(position - math.floor(position))
+        blended = (
+            arrays[left].astype(np.float32) * (1.0 - amount)
+            + arrays[right].astype(np.float32) * amount
+        )
+        yield np.clip(np.rint(blended), 0, 255).astype(np.uint8)
+
+
+def _interpolate_loop_frames(frames, output_count: int):
+    """Materialized compatibility helper used by tests and small callers."""
+    return list(_iter_interpolated_loop_frames(frames, output_count))
+
+
+class RenderCancelled(RuntimeError):
+    pass
+
+
+def _check_cancelled(job: Dict[str, Any]) -> None:
+    if job.get("cancel_requested"):
+        raise RenderCancelled("Render cancelled")
+
+
+def _prune_jobs() -> None:
+    """Bound the in-memory job history while never removing active jobs."""
+    with _jobs_lock:
+        if len(_jobs) < _MAX_JOBS:
+            return
+        terminal = sorted(
+            (
+                (float(job.get("updated_at") or job.get("created_at") or 0.0), job_id)
+                for job_id, job in _jobs.items()
+                if job.get("state") in {"done", "error", "cancelled"}
+            )
+        )
+        while len(_jobs) >= _MAX_JOBS and terminal:
+            _timestamp, job_id = terminal.pop(0)
+            _jobs.pop(job_id, None)
+
+
+def _cache_path(base_dir: str, key: str) -> str:
+    d = os.path.join(base_dir, "cache", "svd_layers")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{key}.npz")
+
+
+def _make_cache_key(*, patch_rgb, mask_L, settings: Dict[str, Any]) -> str:
+    h = hashlib.sha256()
+    h.update(str(patch_rgb.size).encode("utf-8"))
+    h.update(patch_rgb.tobytes())
+    h.update(str(mask_L.size).encode("utf-8"))
+    h.update(mask_L.tobytes())
+    h.update(json.dumps(settings, sort_keys=True).encode("utf-8"))
+    return h.hexdigest()[:32]
+
+
+def _save_cached_frames(path: str, frames_rgb) -> None:
+    import numpy as np
+
+    arr = np.stack([np.array(f.convert("RGB"), dtype=np.uint8) for f in frames_rgb], axis=0)
+    temp_path = f"{path}.{uuid.uuid4().hex}.tmp.npz"
+    try:
+        np.savez_compressed(temp_path, frames=arr)
+        os.replace(temp_path, path)
+    finally:
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _prune_layer_cache(directory: str, max_entries: int = 48) -> None:
+    """Keep the newest cache entries and ignore unrelated files."""
+    if max_entries < 1 or not os.path.isdir(directory):
+        return
+
+    entries = []
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        if not name.endswith(".npz") or not os.path.isfile(path):
+            continue
+        try:
+            entries.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+
+    entries.sort(reverse=True)
+    for _, path in entries[max_entries:]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _load_cached_frames(path: str):
+    import numpy as np
+    from PIL import Image
+
+    with np.load(path) as z:
+        arr = z["frames"].copy()
+    return [Image.fromarray(arr[i], mode="RGB") for i in range(arr.shape[0])]
+
+
+
+def _render_svd_job(job_id: str, req: RenderRequest) -> None:
+    """Main render routine executed in a background thread.
+
+    Pipeline:
+      - Read shapes.json
+      - Choose base background: without_shape_area.png (preferred) or shapes.json["background"]
+      - For each shape:
+          * If pieces/shape_<id>.png exists -> use it (alpha is mask) and paste into crop for conditioning
+          * Else fallback to geometry mask from shapes.json
+      - Run SVD per-shape to generate animated patch frames
+      - Alpha-blend patches back to base frames
+      - Encode mp4
+    """
+    job = _jobs[job_id]
+    _check_cancelled(job)
+    _append_job_log(job, "job started")
+
+    # --- resolve paths for the host running this backend ---
+    shapes_json_path = runtime_path(req.shapes_json)
+    out_mp4_path = runtime_path(req.out_mp4)
+    out_dir = os.path.dirname(out_mp4_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+
+    job["paths"] = {
+        "shapes_json_requested": req.shapes_json,
+        "out_mp4_requested": req.out_mp4,
+        "shapes_json_runtime": shapes_json_path,
+        "out_mp4_runtime": out_mp4_path,
+    }
+    _append_job_log(job, f"paths resolved: {job['paths']}")
+
+    # --- load shapes.json ---
+    if not os.path.exists(shapes_json_path):
+        raise RuntimeError(f"shapes.json not found: {shapes_json_path}")
+
+    base_dir = os.path.dirname(shapes_json_path)
+    with open(shapes_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    shapes = data.get("shapes") or []
+    if not shapes:
+        raise RuntimeError("shapes.json: empty shapes list")
+
+    # --- per-shape UI settings (optional) ---
+    shape_cards = data.get("shape_cards") or []
+    cards_by_id: Dict[int, Dict[str, Any]] = {}
+    for c in shape_cards:
+        try:
+            cid = int(c.get("id"))
+        except Exception:
+            continue
+        cards_by_id[cid] = c
+
+    # --- quality preset ---
+    mode = str(req.render_mode or "final").lower().strip()
+    is_preview = mode.startswith("pre")
+    fps = int(req.fps)
+    num_frames = int(req.num_frames)
+    if is_preview:
+        # if user kept defaults, use a faster preview preset
+        if fps == 7:
+            fps = 6
+        if num_frames == 25:
+            num_frames = 14
+    output_fps = int(req.output_fps or fps)
+    output_frames = int(req.output_frames or num_frames)
+    if is_preview and req.output_frames is None:
+        output_frames = num_frames
+    pad_eff = max(int(req.pad), 48 if is_preview else 64)
+    feather_eff = int(req.feather_px)
+    shrink_px = 1 if is_preview else 2
+    blur_outside_px = 6 if is_preview else 8
+    decode_chunk_size = 4 if is_preview else 2
+    temporal_strength = 0.12 if is_preview else 0.15
+
+    _append_job_log(
+        job,
+        f"preset: mode={mode} generation={num_frames}@{fps}fps "
+        f"output={output_frames}@{output_fps}fps crf={req.crf} pad={pad_eff}",
+    )
+
+    # --- choose background (conditioning uses original, base uses without_shape if available) ---
+    without_shape_path = os.path.join(base_dir, "without_shape_area.png")
+    bg_path_raw = data.get("background", "")
+    bg_path_resolved = resolve_maybe_relative(bg_path_raw, base_dir)
+    background_path = runtime_path(bg_path_resolved)
+    if not os.path.exists(background_path):
+        raise RuntimeError(
+            f"background image not found: {background_path} (from {bg_path_raw})"
+        )
+
+    # --- pieces dir (optional) ---
+    pieces_dir_raw = req.pieces_dir or os.path.join(base_dir, "pieces")
+    pieces_dir_resolved = resolve_maybe_relative(pieces_dir_raw, base_dir)
+    pieces_dir_path = runtime_path(pieces_dir_resolved)
+    if not os.path.isdir(pieces_dir_path):
+        pieces_dir_path = ""
+
+    # --- initialize base frames; load the heavy model only on a cache miss ---
+    job["state"] = "running"
+    pipe = None
+
+    def get_svd_pipe():
+        nonlocal pipe
+        if pipe is not None:
+            return pipe
+        job["progress"] = {
+            "stage": "loading_pipeline",
+            "current": 0,
+            "total": len(shapes),
+        }
+        _append_job_log(job, "loading SVD pipeline (first time may take long)")
+
+        pipe = _load_svd_pipeline(device=_svd_device())
+        _check_cancelled(job)
+        return pipe
+
+    from PIL import Image, ImageFilter
+    import numpy as np
+
+    bg_orig = Image.open(background_path).convert("RGB")
+    W, H = bg_orig.size
+
+    base_bg = bg_orig.copy()
+    if os.path.exists(without_shape_path):
+        try:
+            wimg = Image.open(without_shape_path)
+            if wimg.size == bg_orig.size:
+                if wimg.mode in ("RGBA", "LA") or ("transparency" in getattr(wimg, "info", {})):
+                    base_bg = Image.alpha_composite(bg_orig.convert("RGBA"), wimg.convert("RGBA")).convert("RGB")
+                else:
+                    base_bg = wimg.convert("RGB")
+        except Exception:
+            # fallback: ignore without_shape
+            base_bg = bg_orig.copy()
+
+    base_np = np.array(base_bg, dtype=np.uint8)
+    rgba0 = np.dstack([base_np, np.full((H, W), 255, dtype=np.uint8)])
+    base_frames = [rgba0.copy() for _ in range(num_frames)]
+
+    # --- group shapes into layers (stage2) ---
+    layers: Dict[tuple, list[tuple[Dict[str, Any], int, float]]] = {}
+    project_directions = data.get("flow_directions") or {}
+    if not isinstance(project_directions, dict):
+        project_directions = {}
+    for idx, sh in enumerate(shapes, start=1):
+        try:
+            sid = int(sh.get("id") or idx)
+        except Exception:
+            sid = idx
+
+        card = cards_by_id.get(sid) or {}
+        tool = str(card.get("tool_type") or "default").lower()
+        fallback_direction = project_directions.get(str(sid), project_directions.get(sid))
+        (
+            motion_bucket_id,
+            noise_aug_strength,
+            alpha_scale,
+            direction,
+            directional_strength,
+            cycles,
+        ) = _card_to_svd_settings(card, fallback_direction)
+
+        direction_key = (
+            (round(direction[0], 6), round(direction[1], 6))
+            if direction is not None
+            else (0.0, 0.0)
+        )
+        key = (
+            tool,
+            int(motion_bucket_id),
+            float(noise_aug_strength),
+            direction_key[0],
+            direction_key[1],
+            round(float(directional_strength), 3),
+            int(cycles),
+        )
+        layers.setdefault(key, []).append((sh, sid, float(alpha_scale)))
+
+    layer_items = list(layers.items())
+    total_layers = len(layer_items)
+    _append_job_log(job, f"layers: {total_layers} (layer_render={req.layer_render})")
+
+    from PIL import ImageDraw, ImageChops
+
+    def _render_one_layer(layer_idx: int, layer_key, entries):
+        _check_cancelled(job)
+        (
+            tool,
+            motion_bucket_id,
+            noise_aug_strength,
+            direction_x,
+            direction_y,
+            directional_strength,
+            cycles,
+        ) = layer_key
+        direction = (direction_x, direction_y)
+
+        # union bbox
+        boxes = []
+        for sh, sid, _a in entries:
+            bb = _shape_bbox(sh)
+            if bb:
+                boxes.append(bb)
+        if not boxes:
+            _append_job_log(job, f"skip layer {tool}: no valid bboxes")
+            return
+
+        x_min = min(b[0] for b in boxes)
+        y_min = min(b[1] for b in boxes)
+        x_max = max(b[0] + b[2] for b in boxes)
+        y_max = max(b[1] + b[3] for b in boxes)
+
+        x0 = max(0, x_min - pad_eff)
+        y0 = max(0, y_min - pad_eff)
+        x1 = min(W, x_max + pad_eff)
+        y1 = min(H, y_max + pad_eff)
+        if x1 <= x0 or y1 <= y0:
+            _append_job_log(job, f"skip layer {tool}: invalid crop")
+            return
+
+        pw, ph = (x1 - x0), (y1 - y0)
+        # If the union becomes too large, fall back to per-shape to keep speed reasonable.
+        if len(entries) > 1 and pw * ph > 1024 * 1024:
+            _append_job_log(job, f"layer {tool} too large ({pw}x{ph}); falling back to per-shape")
+            for sh, sid, a in entries:
+                _render_one_layer(layer_idx, layer_key, [(sh, sid, a)])
+            return
+
+        patch_bg = bg_orig.crop((x0, y0, x1, y1)).convert("RGB")
+        patch = patch_bg.copy()
+
+        mask_hard = Image.new("L", (pw, ph), 0)
+
+        # Build patch (paste pieces) + union alpha mask
+        for sh, sid, alpha_scale in entries:
+            bb = _shape_bbox(sh)
+            if not bb:
+                continue
+            x, y, w, h = bb
+            offx, offy = x - x0, y - y0
+            if w <= 0 or h <= 0:
+                continue
+
+            tmp = Image.new("L", (pw, ph), 0)
+
+            piece_path = (
+                os.path.join(pieces_dir_path, f"shape_{sid}.png")
+                if pieces_dir_path
+                else ""
+            )
+            if piece_path and os.path.exists(piece_path):
+                piece_rgba = Image.open(piece_path).convert("RGBA")
+                if piece_rgba.size != (w, h):
+                    piece_rgba = piece_rgba.resize((w, h))
+                a = piece_rgba.split()[-1].convert("L")
+                patch.paste(piece_rgba.convert("RGB"), (offx, offy), mask=a)
+                tmp.paste(a, (offx, offy))
+            else:
+                d = ImageDraw.Draw(tmp)
+                t = str(sh.get("type", "")).lower()
+                if t == "circle":
+                    d.ellipse([offx, offy, offx + w, offy + h], fill=255)
+                elif t == "polygon":
+                    pts = sh.get("points") or []
+                    poly = [(int(p["x"]) - x0, int(p["y"]) - y0) for p in pts if "x" in p and "y" in p]
+                    if len(poly) >= 3:
+                        d.polygon(poly, fill=255)
+                else:
+                    d.rectangle([offx, offy, offx + w, offy + h], fill=255)
+
+            if alpha_scale != 1.0:
+                a_np = (np.array(tmp, dtype=np.float32) * float(alpha_scale)).clip(0, 255).astype(np.uint8)
+                tmp = Image.fromarray(a_np, mode="L")
+
+            mask_hard = ImageChops.lighter(mask_hard, tmp)
+
+        if mask_hard.getbbox() is None:
+            _append_job_log(job, f"skip layer {tool}: empty mask")
+            return
+
+        # focus mask for conditioning / stabilization
+        mask_focus = mask_hard.point(lambda p: 255 if p > 4 else 0)
+
+        # final blend mask
+        mask_final = _mask_shrink_and_feather(mask_hard, shrink_px=shrink_px, feather_px=feather_eff)
+
+        patch_cond = _prepare_focus_patch(patch, mask_focus, blur_outside_px=blur_outside_px)
+
+        layer_hash = int(
+            hashlib.sha256(repr(layer_key).encode("utf-8")).hexdigest()[:8],
+            16,
+        )
+        seed = (int(req.seed_base) + layer_hash) % 2_147_483_647
+
+        settings = {
+            "tool": tool,
+            "motion_bucket_id": int(motion_bucket_id),
+            "noise_aug_strength": float(noise_aug_strength),
+            "fps": int(fps),
+            "num_frames": int(num_frames),
+            "seed": seed,
+            "decode_chunk_size": int(decode_chunk_size),
+            "svd_size": [1024, 576],
+            "direction": [direction_x, direction_y],
+            "directional_strength": float(directional_strength),
+            "cycles": int(cycles),
+            "loop_mode": "ping-pong-reflect-v1",
+        }
+        ckey = _make_cache_key(patch_rgb=patch_cond, mask_L=mask_focus, settings=settings)
+        cpath = _cache_path(base_dir, ckey)
+
+        if req.enable_cache and os.path.exists(cpath):
+            _append_job_log(job, f"cache hit: layer {tool} -> {os.path.basename(cpath)}")
+            frames_piece = _load_cached_frames(cpath)
+        else:
+            _append_job_log(
+                job,
+                f"SVD layer {tool}: motion={motion_bucket_id} "
+                f"noise={noise_aug_strength:.3f} direction={direction} "
+                f"amplitude={directional_strength:.1f}px cycles={cycles}",
+            )
+
+            def on_denoising_step(pipeline, step_index, _timestep, callback_kwargs):
+                _check_cancelled(job)
+                step = int(step_index) + 1
+                steps = int(getattr(pipeline, "num_timesteps", 25))
+                job["progress"] = {
+                    "stage": "decoding" if step >= steps else "rendering",
+                    "current": layer_idx,
+                    "total": total_layers,
+                    "layer": str(layer_key),
+                    "step": step,
+                    "steps": steps,
+                }
+                job["updated_at"] = _now()
+                return callback_kwargs
+
+            frames_piece = _svd_generate_frames(
+                get_svd_pipe(),
+                patch_cond,
+                fps=fps,
+                num_frames=num_frames,
+                seed=seed,
+                motion_bucket_id=int(motion_bucket_id),
+                noise_aug_strength=float(noise_aug_strength),
+                decode_chunk_size=decode_chunk_size,
+                progress_callback=on_denoising_step,
+            )
+
+            # post: reduce drift/flicker
+            job["progress"] = {
+                "stage": "postprocessing",
+                "current": layer_idx,
+                "total": total_layers,
+                "layer": str(layer_key),
+            }
+            job["updated_at"] = _now()
+            frames_piece = _make_seamless_ping_pong(frames_piece)
+            frames_piece = _apply_directional_loop(
+                frames_piece,
+                direction,
+                amplitude_px=float(directional_strength),
+                cycles=int(cycles),
+            )
+            frames_piece = [_color_match_frame(f, patch, mask_focus) for f in frames_piece]
+            frames_piece = _temporal_smooth_frames(frames_piece, mask_focus, strength=temporal_strength)
+
+            if req.enable_cache:
+                try:
+                    _save_cached_frames(cpath, frames_piece)
+                    _prune_layer_cache(os.path.dirname(cpath))
+                except Exception:
+                    pass
+
+        profile_ids = [
+            _effect_profile_id(cards_by_id.get(sid)) for _shape, sid, _alpha in entries
+        ]
+        profiles = [_structure_preservation_profile(value) for value in profile_ids]
+        low_mix = min(profile[0] for profile in profiles)
+        detail_mix = min(profile[1] for profile in profiles)
+        max_change = min(profile[2] for profile in profiles)
+        _append_job_log(
+            job,
+            f"structure preservation: profile={','.join(sorted(set(profile_ids)))} "
+            f"low={low_mix:.2f} detail={detail_mix:.2f}",
+        )
+        frames_piece = [
+            _preserve_reference_structure(
+                frame,
+                patch,
+                low_frequency_mix=low_mix,
+                detail_mix=detail_mix,
+                max_change=max_change,
+            )
+            for frame in frames_piece
+        ]
+
+        # blend back
+        for t_idx in range(num_frames):
+            base_frames[t_idx] = _alpha_blend(base_frames[t_idx], frames_piece[t_idx], mask_final, (x0, y0))
+
+    if req.layer_render:
+        for li, (layer_key, entries) in enumerate(layer_items, start=1):
+            _check_cancelled(job)
+            job["progress"] = {"stage": "rendering", "current": li, "total": total_layers, "layer": str(layer_key)}
+            _append_job_log(job, f"rendering layer {li}/{total_layers}: {layer_key}")
+            _render_one_layer(li, layer_key, entries)
+    else:
+        # fallback (legacy): treat each shape as its own layer, but keep stabilization improvements.
+        flat = []
+        for k, entries in layer_items:
+            for sh, sid, a in entries:
+                flat.append((("shape",) + k[1:], [(sh, sid, a)]))
+        for li, (layer_key, entries) in enumerate(flat, start=1):
+            _check_cancelled(job)
+            job["progress"] = {"stage": "rendering", "current": li, "total": len(flat), "layer": str(layer_key)}
+            _render_one_layer(li, layer_key, entries)
+
+    frames_to_encode = base_frames
+    if output_frames != len(base_frames):
+        job["progress"] = {
+            "stage": "interpolating",
+            "current": len(base_frames),
+            "total": output_frames,
+        }
+        _append_job_log(
+            job,
+            f"loop interpolation: {len(base_frames)} -> {output_frames} frames",
+        )
+        frames_to_encode = _iter_interpolated_loop_frames(
+            base_frames,
+            output_frames,
+        )
+
+    # --- encode ---
+    job["progress"] = {"stage": "encoding", "current": 0, "total": output_frames}
+    _append_job_log(job, "encoding mp4")
+    _check_cancelled(job)
+
+    import imageio
+    temp_mp4_path = f"{out_mp4_path}.job-{job_id}.tmp.mp4"
+    writer = None
+    try:
+        writer = imageio.get_writer(
+            temp_mp4_path,
+            fps=output_fps,
+            format="FFMPEG",
+            codec="libx264",
+            pixelformat="yuv420p",
+            quality=None,
+            ffmpeg_params=[
+                "-crf",
+                str(int(req.crf)),
+                "-preset",
+                "medium",
+                "-movflags",
+                "+faststart",
+            ],
+        )
+        for t_idx, frame in enumerate(frames_to_encode, start=1):
+            _check_cancelled(job)
+            writer.append_data(frame[..., :3])
+            job["progress"] = {
+                "stage": "encoding",
+                "current": t_idx,
+                "total": output_frames,
+            }
+        writer.close()
+        writer = None
+        _check_cancelled(job)
+        os.replace(temp_mp4_path, out_mp4_path)
+    finally:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        if os.path.exists(temp_mp4_path):
+            try:
+                os.remove(temp_mp4_path)
+            except OSError:
+                pass
+
+    job["state"] = "done"
+    job["result"] = {
+        "out_mp4": out_mp4_path,
+        "out_mp4_win": wsl_to_win_path(out_mp4_path),
+    }
+    job["progress"] = {"stage": "done", "current": total_layers, "total": total_layers}
+    _append_job_log(job, f"done: {job['result']}")
+
+
+# -----------------------
+# Middleware: log requests
+# -----------------------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    global _last_activity
+    _last_activity = _now()
+    rid = uuid.uuid4().hex[:8]
+    start = _now()
+    try:
+        response = await call_next(request)
+        dur = (_now() - start) * 1000.0
+        log.info("[%s] %s %s -> %s (%.1fms)", rid, request.method, request.url.path, response.status_code, dur)
+        return response
+    except Exception as e:
+        dur = (_now() - start) * 1000.0
+        log.exception("[%s] %s %s !! %s (%.1fms)", rid, request.method, request.url.path, e, dur)
+        raise
+
+
+# -----------------------
+# Routes
+# -----------------------
+@app.get("/")
+def root():
+    return {
+        "service": "ai_editor backend",
+        "ok": True,
+        "runtime": os.name,
+        "health": "/health",
+        "gpu": "/gpu",
+        "render": "/svd/render",
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": "ai_editor backend",
+        "version": app.version,
+        "runtime": os.name,
+        "ts": _now(),
+    }
+
+
+@app.get("/gpu")
+def gpu():
+    try:
+        import torch
+        cuda = torch.cuda.is_available()
+        dev = torch.cuda.get_device_name(0) if cuda else None
+        return {"cuda_available": cuda, "device": dev, "torch": torch.__version__}
+    except Exception as e:
+        return {"cuda_available": False, "device": None, "error": str(e)}
+
+
+@app.post("/shutdown")
+def shutdown_owned_backend(request: Request):
+    """Stop only an auto-started backend whose owner presents its secret token."""
+    provided = request.headers.get("x-ai-backend-owner", "")
+    if not _OWNER_TOKEN or not hmac.compare_digest(provided, _OWNER_TOKEN):
+        raise HTTPException(status_code=403, detail="Backend owner token rejected")
+    _schedule_owned_shutdown()
+    return {"ok": True, "state": "shutting_down"}
+
+
+@app.post("/svd/render")
+def svd_render(req: RenderRequest, request: Request):
+    _prune_jobs()
+    with _jobs_lock:
+        if len(_jobs) >= _MAX_JOBS:
+            raise HTTPException(
+                status_code=503,
+                detail="Job queue is full; wait for an active render to finish",
+            )
+    job_id = uuid.uuid4().hex
+    job = {
+        "job_id": job_id,
+        "state": "queued",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "payload": req.model_dump(),
+        "client": {"host": request.client.host if request.client else None},
+        "progress": {"stage": "queued", "current": 0, "total": 0},
+        "log": [],
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+    _append_job_log(job, "queued")
+
+    # run async in executor
+    def _runner():
+        try:
+            _render_svd_job(job_id, req)
+        except RenderCancelled:
+            job["state"] = "cancelled"
+            job["error"] = None
+            job["progress"] = {"stage": "cancelled", "current": 0, "total": 0}
+            _append_job_log(job, "cancelled")
+        except Exception as e:
+            job["state"] = "error"
+            job["error"] = str(e)
+            _append_job_log(job, f"ERROR: {e}")
+            log.exception("Job %s failed: %s", job_id, e)
+
+    _executor.submit(_runner)
+    return {"job_id": job_id}
+
+
+@app.get("/svd/status/{job_id}")
+def svd_status(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job_id not found")
+        return copy.deepcopy(job)
+
+
+@app.post("/svd/cancel/{job_id}")
+def svd_cancel(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job_id not found")
+        if job.get("state") in {"done", "error", "cancelled"}:
+            return {"job_id": job_id, "state": job.get("state")}
+        job["cancel_requested"] = True
+        job["updated_at"] = _now()
+        return {"job_id": job_id, "state": "cancelling"}
+
+
+def main() -> int:
+    """Run the API without requiring users to remember the uvicorn command."""
+    try:
+        import uvicorn
+    except ModuleNotFoundError:
+        print(
+            "Не установлен uvicorn. Установите его в окружение проекта:\n"
+            f'"{sys.executable}" -m pip install uvicorn'
+        )
+        return 2
+
+    host = os.environ.get("AI_BACKEND_HOST", "0.0.0.0")
+    port = int(os.environ.get("AI_BACKEND_PORT", "8000"))
+    _start_idle_watchdog()
+    uvicorn.run(app, host=host, port=port, log_level=LOG_LEVEL.lower())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

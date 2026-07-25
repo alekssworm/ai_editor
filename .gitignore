@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+.venv-wsl/
+
+.idea/
+
+*.log
+cache/
+effect_assets/
+result.mp4

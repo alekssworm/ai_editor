@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "torch",
+  "effect_type": "fire",
+  "label": "Torch",
+  "editor_key": "main_Torch",
+  "aliases": ["Torch", "torch"],
+  "controls": ["intensity", "flame_height", "turbulence", "heat_distortion", "glow", "ember_density", "opacity"],
+  "params": {
+    "intensity": 0.86,
+    "flame_height": 0.88,
+    "turbulence": 0.46,
+    "heat_distortion": 3.1,
+    "glow": 0.48,
+    "ember_density": 0.14,
+    "opacity": 0.92,
+    "cycles": 1
+  }
+}

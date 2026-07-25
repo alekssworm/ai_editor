@@ -1,3 +1,5 @@
+import math
+
 from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtWidgets import QGraphicsSceneMouseEvent
 from draw_tools import ResizableRectItem, SelectableCircleItem, SelectablePolygonItem  # Импортируем оба
@@ -71,10 +73,23 @@ class DrawingToolController:
 
             parent_id = None
             new_item_rect = self.current_item.sceneBoundingRect()
-            for sid, obj in self.parent.shape_registry.items():
-                if obj is not self.current_item and obj.sceneBoundingRect().contains(new_item_rect.center()):
-                    parent_id = sid
-                    break
+            dead = []
+            for sid, obj in list(self.parent.shape_registry.items()):
+                if obj is self.current_item:
+                    continue
+                try:
+                    if obj is None or obj.scene() is None:
+                        dead.append(sid)
+                        continue
+                    if obj.sceneBoundingRect().contains(new_item_rect.center()):
+                        parent_id = sid
+                        break
+                except RuntimeError:
+                    dead.append(sid)
+
+            for sid in dead:
+                self.parent.shape_registry.pop(sid, None)
+
             self.parent.shape_parents[shape_id] = parent_id
             add_shape_to_list(self.parent.ui, shape_id, color)
 
@@ -104,7 +119,8 @@ class DrawingToolController:
                 self.temp_lines.append(line)
 
                 if len(self.polygon_points) >= 3:
-                    dist = (point - self.polygon_points[0]).manhattanLength()
+                    first = self.polygon_points[0]
+                    dist = math.hypot(point.x() - first.x(), point.y() - first.y())
                     if dist < 15:
                         self.finish_polygon()
 
@@ -117,7 +133,9 @@ class DrawingToolController:
                 self.current_item.setRect(rect)
             elif self.current_tool == "circle":
                 center = self.start_point
-                radius = (end_point - center).manhattanLength()
+                radius = math.hypot(
+                    end_point.x() - center.x(), end_point.y() - center.y()
+                )
                 rect = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
                 self.current_item.setRect(rect)
 
@@ -179,4 +197,3 @@ class DrawingToolController:
         self.parent.shape_parents[shape_id] = parent_id
 
         self.clear_polygon_temp()
-

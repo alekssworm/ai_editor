@@ -1,9 +1,16 @@
 import sys
+import os
+import logging
 
+import backend_client
+
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QGraphicsScene,
+    QApplication, QCheckBox, QMainWindow, QGraphicsScene, QPushButton,
 )
+
+from ai_panel_logic import AIWindow
 from ui_editor import Ui_MainWindow
 
 from import_image import import_image
@@ -16,7 +23,7 @@ from Activate_disconect_button import (
     activate_rectangle_mode, deactivate_drawing_mode, activate_circle_mode
 )
 from on_shape_selected import on_shape_selected
-from save_logic import save_outputs
+from save_logic import _save_outputs_impl, save_outputs
 from show_all_handle import show_all_handles
 
 from navigation_overlay import NavigationOverlay
@@ -29,8 +36,14 @@ from context_menu import on_key_press
 
 from import_scene import load_scene
 from Activate_disconect_button import activate_polygon_mode
-from ai_panel_logic import AIWindow
 from m_event import MouseMoveFilter
+from effect_preview import start_effect_preview
+from flow_direction_tool import FlowDirectionController
+from effect_engine.project import normalize_direction
+from effect_engine.preparation import create_preparation_pipeline
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +61,10 @@ class MainWindow(QMainWindow):
 
         # Создаём сцену и устанавливаем в graphicsView
         self.scene = QGraphicsScene()
+
+        # последний сохранённый проект (для передачи в AI panel)
+        self.current_project_folder = None
+        self.current_shapes_json_path = None
         self.ui.graphicsView.setScene(self.scene)
 
         # Панели скрыты при старте
@@ -57,6 +74,9 @@ class MainWindow(QMainWindow):
         # Регистрация фигур
         self.shape_registry = {}  # {id: QGraphicsItem}
         self.shape_id_counter = 1
+        self.flow_directions = {}  # {shape_id: normalized (x, y)}
+        self.flow_guides = {}  # {shape_id: [{start: [x,y], end: [x,y]}]}
+        self.effect_overrides = {}  # manual speed/obstacle/foam zones by shape
 
         # Кнопки UI
         self.ui.tools_Button.clicked.connect(lambda: toggle_tools_panel(self))
@@ -67,8 +87,39 @@ class MainWindow(QMainWindow):
         self.ui.Cursor.clicked.connect(lambda: deactivate_drawing_mode(self))
         self.ui.cursor_Button.clicked.connect(lambda: deactivate_drawing_mode(self))
         self.ui.Circle.clicked.connect(lambda: activate_circle_mode(self))
+        self.ui.save_button.setText("Save project")
+        self.ui.save_button.setToolTip(
+            "Save background, shapes, pieces, flow directions and AI effects"
+        )
         self.ui.save_button.clicked.connect(lambda: save_outputs(self))
         self.ui.Resizable_button.clicked.connect(lambda: show_all_handles(self))
+        self.ui.preview_button.setText("Local preview")
+        self.ui.preview_button.setToolTip(
+            "Deterministic preview; runs locally without AI backend"
+        )
+        self.ui.preview_button.clicked.connect(lambda: start_effect_preview(self))
+        self.ai_prepare_checkbox = QCheckBox("AI prep")
+        self.ai_prepare_checkbox.setToolTip(
+            "Use optional SAM and Depth Anything proposals for mask/depth. "
+            "Models are downloaded on first use; Local preview remains the fallback."
+        )
+        self.ui.horizontalLayout_4.insertWidget(
+            max(0, self.ui.horizontalLayout_4.count() - 1),
+            self.ai_prepare_checkbox,
+        )
+        self.ai_retry_button = QPushButton("Retry AI")
+        self.ai_retry_button.setToolTip(
+            "Clear Mask/Depth retry backoff and prepare the selected area again"
+        )
+        self.ai_retry_button.clicked.connect(self._retry_ai_preparation)
+        self.ui.horizontalLayout_4.insertWidget(
+            max(0, self.ui.horizontalLayout_4.count() - 1),
+            self.ai_retry_button,
+        )
+        self._preview_debounce = QTimer(self)
+        self._preview_debounce.setSingleShot(True)
+        self._preview_debounce.setInterval(320)
+        self._preview_debounce.timeout.connect(self._refresh_open_preview)
 
         # Подключение селектора
         self.scene.selectionChanged.connect(lambda: on_shape_selected(self))
@@ -76,6 +127,14 @@ class MainWindow(QMainWindow):
         # Настройки рисования
         self.current_shape_color = QColor(255, 0, 0, 50)
         self.draw_controller = DrawingToolController(self.scene, self)
+        self.flow_direction_controller = FlowDirectionController(self)
+        self.ui.settings.setToolTip(
+            "Edit flow curves and manual speed, obstacle, foam and mask zones"
+        )
+        self.ui.settings.clicked.connect(self.flow_direction_controller.toggle)
+        self.scene.selectionChanged.connect(
+            self.flow_direction_controller.refresh_for_selection
+        )
 
         # 🧠 Важно: добавляем overlay после сцены
         self.navigation_overlay = NavigationOverlay(self.ui.graphicsView, self)
@@ -83,8 +142,6 @@ class MainWindow(QMainWindow):
 
 
         self.ui.listWidget.itemClicked.connect(lambda item: on_list_item_selected(self, item))
-
-        self.keyPressEvent = lambda : on_key_press
 
         self.fill_hidden_global = False
         self.ui.eye_Button.clicked.connect(lambda: toggle_all_fill(self))
@@ -96,12 +153,94 @@ class MainWindow(QMainWindow):
 
         self.ui.by_point.clicked.connect(lambda: activate_polygon_mode(self))
 
-        self.ai_window = AIWindow()
-        self.ui.ai_panel.clicked.connect(self.ai_window.show)
-
-
         self.mouse_filter = MouseMoveFilter(self.navigation_overlay, self.scene)
         self.scene.installEventFilter(self.mouse_filter)
+
+        self.ai_window = AIWindow()
+        self.ai_window.motion_changed.connect(self._sync_ai_motion)
+        self.ai_window.project_sync_callback = self._sync_current_project
+        self.ai_window.hide()  # окно создано (для фантомов), но не показано
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(backend_client.shutdown_local_backend)
+
+        def open_ai():
+            # прокидываем пути проекта в AI panel, чтобы render не спрашивал диалоги
+            try:
+                if getattr(self, "current_shapes_json_path", None):
+                    base_dir = os.path.dirname(self.current_shapes_json_path)
+                    pieces_dir = os.path.join(base_dir, "pieces")
+                    if not os.path.isdir(pieces_dir):
+                        pieces_dir = base_dir
+                    masks_dir = os.path.join(base_dir, "masks")
+                    out_mp4 = os.path.join(base_dir, "result.mp4")
+                    self.ai_window.set_render_sources(
+                        shapes_json_path=self.current_shapes_json_path,
+                        pieces_dir=pieces_dir,
+                        masks_dir=masks_dir,
+                        out_mp4_path=out_mp4,
+                    )
+            except Exception as error:
+                LOGGER.warning("Could not pass project paths to AI Panel: %s", error)
+
+            self.ai_window.show()
+            self.ai_window.raise_()
+            self.ai_window.activateWindow()
+
+        self.ui.ai_panel.clicked.connect(open_ai)
+
+    def _sync_ai_motion(self, shape_id, motion):
+        direction = normalize_direction((motion or {}).get("direction"))
+        if direction is None or int(shape_id) not in self.shape_registry:
+            return
+        shape_id = int(shape_id)
+        previous = normalize_direction(self.flow_directions.get(shape_id))
+        if previous is not None and any(
+            abs(previous[index] - direction[index]) > 1e-6 for index in (0, 1)
+        ):
+            self.flow_guides.pop(shape_id, None)
+        self.flow_directions[shape_id] = direction
+        self.flow_direction_controller.refresh_for_selection()
+        self._schedule_open_preview_refresh(shape_id)
+
+    def _schedule_open_preview_refresh(self, shape_id: int | None = None) -> None:
+        dialog = getattr(self, "_effect_preview_dialog", None)
+        if dialog is None:
+            return
+        try:
+            if shape_id is not None and int(dialog.shape_id) != int(shape_id):
+                return
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return
+        self._preview_debounce.start()
+
+    def _refresh_open_preview(self) -> None:
+        if getattr(self, "_effect_preview_running", False):
+            self._preview_debounce.start()
+            return
+        dialog = getattr(self, "_effect_preview_dialog", None)
+        if dialog is not None:
+            start_effect_preview(self)
+
+    def _retry_ai_preparation(self) -> None:
+        self.ai_prepare_checkbox.setChecked(True)
+        states = create_preparation_pipeline(True).retry_failed_providers()
+        summary = ", ".join(
+            f"{name}: retry ready" for name in states
+        ) or "AI providers: retry ready"
+        self.statusBar().showMessage(summary, 5000)
+        self._schedule_open_preview_refresh()
+
+    def _sync_current_project(self):
+        """Persist current geometry/effects silently before preview or rendering."""
+        folder = getattr(self, "current_project_folder", None)
+        if not folder:
+            return getattr(self, "current_shapes_json_path", None)
+        return _save_outputs_impl(self, folder=folder)
+
+    def keyPressEvent(self, event):
+        if not on_key_press(self, event):
+            super().keyPressEvent(event)
 
 
 if __name__ == "__main__":

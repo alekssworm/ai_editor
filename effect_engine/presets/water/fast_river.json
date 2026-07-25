@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "fast_river",
+  "effect_type": "water",
+  "label": "Fast river",
+  "editor_key": "main_fast_river",
+  "aliases": ["rapid river"],
+  "controls": ["intensity", "randomness", "opacity", "viscosity", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
+  "params": {
+    "strength": 7.5,
+    "wavelength": 48.0,
+    "secondary_wavelength": 22.0,
+    "opacity": 0.85,
+    "advection": 1.1,
+    "cross_flow": 0.65,
+    "shimmer": 0.05,
+    "highlight": 0.24,
+    "foam_amount": 0.48,
+    "turbulence": 0.55,
+    "refraction": 0.82,
+    "surface_detail": 0.68
+  }
+}

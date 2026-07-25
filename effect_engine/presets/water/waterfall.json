@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "waterfall",
+  "effect_type": "water",
+  "label": "Waterfall",
+  "editor_key": "main_waterfall",
+  "aliases": ["waterfall"],
+  "controls": ["intensity", "power", "grain", "opacity", "randomness", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
+  "params": {
+    "strength": 6.0,
+    "wavelength": 38.0,
+    "secondary_wavelength": 24.0,
+    "opacity": 0.75,
+    "advection": 1.25,
+    "cross_flow": 0.25,
+    "shimmer": 0.03,
+    "highlight": 0.28,
+    "foam_amount": 0.68,
+    "turbulence": 0.42,
+    "refraction": 0.7,
+    "surface_detail": 0.72
+  }
+}

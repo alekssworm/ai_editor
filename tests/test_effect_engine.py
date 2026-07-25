@@ -1,0 +1,1284 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import time
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image
+
+from effect_engine.cache import ByteBudgetLRU
+from effect_engine.cli import resolve_render_params
+from effect_engine.color import linear_to_srgb_u8, srgb_u8_to_linear
+from effect_engine.compositor import EffectApplication, EffectCompositor
+from effect_engine.context import EffectContext
+from effect_engine.effects.fire import FireEffect
+from effect_engine.effects.rain import RainEffect
+from effect_engine.effects.water import WaterFlowEffect, _integrated_flow_coordinates
+from effect_engine.layers import LayeredEffect
+from effect_engine.models import ASSET_VERSION, EffectAssets
+from effect_engine.parameter_schema import default_parameter_schema_registry
+from effect_engine.preparation import (
+    PreparationPipeline,
+    ResilientDepthEstimator,
+    ResilientMaskRefiner,
+    TransformersDepthEstimator,
+    TransformersMaskRefiner,
+    create_preparation_pipeline,
+)
+from effect_engine.plugins import default_effect_plugin_registry
+from effect_engine.preview import build_project_preview, renderer_params_from_card
+from effect_engine.preset_registry import PresetRegistry, default_preset_registry
+from effect_engine.project import (
+    load_project,
+    normalize_direction,
+    prepare_project_shape,
+    project_effect_overrides,
+    project_flow_direction,
+    project_flow_guides,
+    serialize_effect_overrides,
+    serialize_flow_directions,
+    serialize_flow_guides,
+)
+from effect_engine.quality import analyze_effect_quality
+from effect_engine.region import effect_region
+from effect_engine.renderer import DeterministicEffectEngine
+from effect_engine.spatial import (
+    bilinear_remap,
+    gaussian_blur_float,
+    periodic_sine,
+)
+from effect_engine.storage import EffectAssetStore
+from effect_engine.temporal import TemporalSampling
+
+
+def sample_image(width: int = 48, height: int = 36) -> Image.Image:
+    y, x = np.mgrid[0:height, 0:width]
+    rgb = np.stack(
+        (
+            (x * 7 + y * 2) % 256,
+            (x * 3 + y * 9) % 256,
+            (x * 11 + y * 5) % 256,
+        ),
+        axis=-1,
+    ).astype(np.uint8)
+    return Image.fromarray(rgb, mode="RGB")
+
+
+class EffectEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.image = sample_image()
+        self.mask = np.zeros((self.image.height, self.image.width), dtype=np.float32)
+        self.mask[5:31, 6:43] = 1.0
+        self.pipeline = PreparationPipeline()
+
+    def prepare(self, seed: int = 42) -> EffectAssets:
+        return self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=seed,
+            direction=(1.0, 0.2),
+        )
+
+    def test_float_spatial_utilities_preserve_precision_and_tile_remap(self) -> None:
+        impulse = np.zeros((17, 19), dtype=np.float32)
+        impulse[8, 9] = 1.0
+        blurred = gaussian_blur_float(impulse, 2.4)
+        self.assertEqual(blurred.dtype, np.float32)
+        self.assertEqual(blurred.shape, impulse.shape)
+        self.assertAlmostEqual(float(blurred.sum()), 1.0, places=5)
+        np.testing.assert_allclose(blurred, np.flip(blurred, axis=0), atol=1e-7)
+        np.testing.assert_allclose(blurred, np.flip(blurred, axis=1), atol=1e-7)
+
+        source = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+        y, x = np.mgrid[0:5, 0:7].astype(np.float32)
+        identity = bilinear_remap(source, x, y, tile_rows=2)
+        np.testing.assert_array_equal(identity, source)
+        shifted = bilinear_remap(source, x + 0.5, y, tile_rows=2)
+        self.assertAlmostEqual(float(shifted[2, 2]), 16.5)
+        spatial = np.linspace(-2.0, 2.0, 31, dtype=np.float32)
+        np.testing.assert_allclose(
+            periodic_sine(spatial, 0.0, temporal_cycles=3, offset=0.4),
+            periodic_sine(
+                spatial,
+                np.pi * 2.0,
+                temporal_cycles=3,
+                offset=0.4,
+            ),
+            atol=2e-6,
+        )
+
+    def test_roi_rendering_crops_maps_and_reuses_session_cache(self) -> None:
+        image = sample_image(640, 480)
+        mask = np.zeros((480, 640), dtype=np.float32)
+        mask[210:270, 285:355] = 1.0
+        assets = PreparationPipeline().prepare(
+            image,
+            mask,
+            effect_type="water",
+            seed=74,
+            direction=(1.0, 0.1),
+        )
+        region = effect_region(assets, margin=48)
+        self.assertIsNotNone(region)
+        self.assertLess(region.pixels, assets.width * assets.height // 4)
+        self.assertEqual(region.assets.size, (region.width, region.height))
+
+        session = DeterministicEffectEngine().create_session()
+        first = np.asarray(session.render_frame(image, assets, 0.25))
+        after_first = session.region_cache_info()
+        second = np.asarray(session.render_frame(image, assets, 0.25))
+        after_second = session.region_cache_info()
+        np.testing.assert_array_equal(first, second)
+        self.assertEqual(after_first.entries, 1)
+        self.assertGreater(after_second.hits, after_first.hits)
+        source = np.asarray(image)
+        np.testing.assert_array_equal(
+            first[assets.mask <= 1e-4],
+            source[assets.mask <= 1e-4],
+        )
+
+    def test_temporal_sampling_is_periodic_deterministic_and_visible(self) -> None:
+        assets = self.prepare(seed=93)
+        engine = DeterministicEffectEngine()
+        sampling = TemporalSampling.for_frame(
+            samples=3,
+            shutter_fraction=0.65,
+            frame_count=24,
+        )
+        self.assertEqual(len(sampling.times(0.0)), 3)
+        self.assertEqual(sampling.times(0.0), sampling.times(1.0))
+        blurred = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.31,
+                temporal_sampling=sampling,
+            )
+        )
+        repeated = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.31,
+                temporal_sampling=sampling,
+            )
+        )
+        loop_start = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                0.0,
+                temporal_sampling=sampling,
+            )
+        )
+        loop_end = np.asarray(
+            engine.render_frame(
+                self.image,
+                assets,
+                1.0,
+                temporal_sampling=sampling,
+            )
+        )
+        sharp = np.asarray(engine.render_frame(self.image, assets, 0.31))
+        np.testing.assert_array_equal(blurred, repeated)
+        np.testing.assert_array_equal(loop_start, loop_end)
+        self.assertFalse(np.array_equal(blurred, sharp))
+        np.testing.assert_array_equal(
+            blurred[assets.mask <= 1e-4],
+            np.asarray(self.image)[assets.mask <= 1e-4],
+        )
+        with self.assertRaisesRegex(ValueError, "between 1 and 16"):
+            TemporalSampling(samples=17, shutter=0.1)
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            TemporalSampling(samples=2.5, shutter=0.1)
+        with self.assertRaisesRegex(ValueError, "shutter_fraction"):
+            TemporalSampling.for_frame(
+                samples=2,
+                shutter_fraction=1.2,
+                frame_count=24,
+            )
+
+    def test_rain_and_fire_respect_protected_occlusion_zones(self) -> None:
+        image = sample_image(96, 72)
+        mask = np.ones((72, 96), dtype=np.float32)
+        source = np.asarray(image, dtype=np.int16)
+        for effect_type, params in (
+            ("rain", {"density": 1.0, "mist": 0.5, "opacity": 0.9}),
+            (
+                "fire",
+                {
+                    "intensity": 1.0,
+                    "glow": 0.7,
+                    "ember_density": 0.7,
+                },
+            ),
+        ):
+            clear = PreparationPipeline().prepare(
+                image,
+                mask,
+                effect_type=effect_type,
+                seed=37,
+                direction=(0.0, -1.0),
+            )
+            obstacles = clear.obstacles.copy()
+            obstacles[20:52, 32:64] = 1.0
+            blocked = EffectAssets(
+                effect_type=clear.effect_type,
+                seed=clear.seed,
+                mask=clear.mask,
+                depth=clear.depth,
+                flow=clear.flow,
+                speed=clear.speed,
+                obstacles=obstacles,
+                foam=clear.foam,
+                style=clear.style,
+                textures=clear.textures,
+                metadata=clear.metadata,
+            )
+            engine = DeterministicEffectEngine()
+            clear_frame = np.asarray(
+                engine.render_frame(image, clear, 0.42, params=params),
+                dtype=np.int16,
+            )
+            blocked_frame = np.asarray(
+                engine.render_frame(image, blocked, 0.42, params=params),
+                dtype=np.int16,
+            )
+            clear_change = np.abs(clear_frame - source)[20:52, 32:64].mean()
+            blocked_change = np.abs(blocked_frame - source)[20:52, 32:64].mean()
+            self.assertLess(
+                float(blocked_change),
+                float(clear_change) * 0.55,
+                effect_type,
+            )
+
+    def test_effect_assets_storage_round_trip(self) -> None:
+        assets = self.prepare()
+        with tempfile.TemporaryDirectory() as directory:
+            EffectAssetStore.save(assets, directory)
+            restored = EffectAssetStore.load(directory)
+
+        self.assertEqual(restored.effect_type, "water")
+        self.assertEqual(restored.seed, 42)
+        self.assertEqual(restored.size, self.image.size)
+        self.assertGreater(len(restored.style.palette), 0)
+        np.testing.assert_allclose(restored.mask, assets.mask, atol=1.0 / 255.0)
+        np.testing.assert_allclose(restored.depth, assets.depth, atol=1.0 / 65535.0)
+        np.testing.assert_allclose(restored.flow, assets.flow, atol=1e-6)
+        np.testing.assert_allclose(restored.speed, assets.speed, atol=1.0 / 255.0)
+        np.testing.assert_allclose(
+            restored.obstacles, assets.obstacles, atol=1.0 / 255.0
+        )
+        np.testing.assert_allclose(restored.foam, assets.foam, atol=1.0 / 255.0)
+
+    def test_optional_ai_providers_return_editable_map_proposals(self) -> None:
+        rough = np.zeros(self.mask.shape, dtype=np.float32)
+        rough[8:28, 10:38] = 1.0
+        candidate = np.zeros(self.mask.shape, dtype=np.uint8)
+        candidate[9:27, 11:37] = 1
+        mask_provider = TransformersMaskRefiner(feather_radius=0)
+        mask_provider._pipeline = lambda _image: {"masks": [candidate]}
+        refined = mask_provider.refine(np.asarray(self.image), rough)
+
+        depth_provider = TransformersDepthEstimator()
+        depth_provider._pipeline = lambda _image: {
+            "depth": np.tile(
+                np.linspace(0.0, 1.0, self.image.width, dtype=np.float32),
+                (self.image.height, 1),
+            )
+        }
+        depth = depth_provider.estimate(np.asarray(self.image), refined)
+
+        self.assertGreater(float(refined[15, 20]), 0.9)
+        self.assertEqual(float(refined[0, 0]), 0.0)
+        self.assertAlmostEqual(float(depth.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(depth.max()), 1.0, places=5)
+        self.assertEqual(
+            create_preparation_pipeline(use_ai=False).mask_refiner.name,
+            "morphology-v1",
+        )
+
+    def test_version_one_flow_magnitude_migrates_to_speed_map(self) -> None:
+        flow = np.zeros((*self.mask.shape, 2), dtype=np.float32)
+        flow[..., 0] = 0.4
+        assets = EffectAssets(
+            version=1,
+            effect_type="water",
+            seed=1,
+            mask=self.mask,
+            depth=self.mask,
+            flow=flow,
+        )
+
+        self.assertEqual(assets.version, ASSET_VERSION)
+        self.assertAlmostEqual(float(assets.speed.max()), 0.4, places=6)
+        self.assertAlmostEqual(float(assets.flow[..., 0].max()), 1.0, places=6)
+        self.assertEqual(float(assets.obstacles.max()), 0.0)
+        self.assertEqual(float(assets.foam.max()), 0.0)
+
+    def test_effect_asset_manifest_switch_is_atomic_and_cleans_old_files(self) -> None:
+        assets = self.prepare()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = EffectAssetStore.save(assets, directory)
+            first_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            first_files = set(first_manifest["files"].values())
+
+            EffectAssetStore.save(self.prepare(seed=99), directory)
+            second_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            second_files = set(second_manifest["files"].values())
+
+            self.assertTrue(first_files.isdisjoint(second_files))
+            self.assertTrue(all((Path(directory) / name).exists() for name in second_files))
+            self.assertTrue(all(not (Path(directory) / name).exists() for name in first_files))
+            self.assertFalse(list(Path(directory).glob(".manifest.json-*.tmp")))
+
+    def test_water_renderer_is_seeded_and_periodic(self) -> None:
+        assets = self.prepare(seed=123)
+        engine = DeterministicEffectEngine()
+        at_zero = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        at_one = np.asarray(engine.render_frame(self.image, assets, 1.0))
+        repeated = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        other_phase = np.asarray(engine.render_frame(self.image, assets, 0.25))
+
+        np.testing.assert_array_equal(at_zero, at_one)
+        np.testing.assert_array_equal(at_zero, repeated)
+        self.assertFalse(np.array_equal(at_zero, other_phase))
+        original = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            at_zero[assets.mask <= 0.01], original[assets.mask <= 0.01]
+        )
+
+        other_seed = self.prepare(seed=124)
+        seeded_output = np.asarray(engine.render_frame(self.image, other_seed, 0.0))
+        self.assertFalse(np.array_equal(at_zero, seeded_output))
+
+    def test_frame_sequence_does_not_duplicate_endpoint(self) -> None:
+        frames = DeterministicEffectEngine().render_frames(self.image, self.prepare(), 12)
+        self.assertEqual(len(frames), 12)
+        self.assertFalse(np.array_equal(np.asarray(frames[0]), np.asarray(frames[-1])))
+
+    def test_project_adapter_supports_relative_background_and_polygon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 7,
+                        "type": "Polygon",
+                        "points": [
+                            {"x": 4, "y": 4},
+                            {"x": 42, "y": 7},
+                            {"x": 35, "y": 31},
+                            {"x": 8, "y": 28},
+                        ],
+                        "color": "#00aaff",
+                        "parent_id": None,
+                    }
+                ],
+                "shape_cards": [{"id": 7, "tool_type": "water", "main": None, "sub": []}],
+                "flow_directions": {"7": {"x": 0, "y": -2}},
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            assets, target = prepare_project_shape(
+                project_path,
+                7,
+                seed=9,
+            )
+
+            self.assertEqual(assets.effect_type, "water")
+            self.assertEqual(assets.metadata["shape_id"], 7)
+            self.assertEqual(assets.metadata["preset_id"], "river")
+            self.assertEqual(assets.metadata["renderer_params"]["strength"], 4.5)
+            self.assertTrue((target / "manifest.json").exists())
+            self.assertGreater(float(assets.mask.max()), 0.9)
+            flow_speed = np.linalg.norm(assets.flow, axis=-1)
+            self.assertTrue(np.all(flow_speed <= 1.0 + 1e-5))
+            self.assertGreater(float(flow_speed[assets.mask > 0.5].mean()), 0.5)
+            self.assertEqual(float(flow_speed[assets.mask <= 0.01].max()), 0.0)
+            normalized_flow = assets.flow / np.maximum(flow_speed[..., None], 1e-6)
+            self.assertAlmostEqual(
+                float(normalized_flow[assets.mask > 0.5, 0].mean()), 0.0, delta=0.08
+            )
+            self.assertLess(
+                float(normalized_flow[assets.mask > 0.5, 1].mean()), -0.95
+            )
+            self.assertGreater(float(assets.depth.std()), 0.001)
+
+    def test_project_preparation_cache_reuses_ai_maps_by_fingerprint(self) -> None:
+        class CountingMask:
+            name = "counting-mask-v1"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def refine(self, image, rough_mask):
+                del image
+                self.calls += 1
+                return np.asarray(rough_mask, dtype=np.float32)
+
+        class CountingDepth:
+            name = "counting-depth-v1"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def estimate(self, image, mask):
+                del image
+                self.calls += 1
+                return np.full(mask.shape, 0.5, dtype=np.float32)
+
+        mask_provider = CountingMask()
+        depth_provider = CountingDepth()
+        pipeline = PreparationPipeline(
+            mask_refiner=mask_provider,
+            depth_estimator=depth_provider,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 12,
+                        "type": "Rectangle",
+                        "x": 5,
+                        "y": 4,
+                        "width": 30,
+                        "height": 22,
+                    }
+                ],
+                "shape_cards": [{"id": 12, "tool_type": "water"}],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            first, _ = prepare_project_shape(
+                project_path,
+                12,
+                seed=31,
+                pipeline=pipeline,
+            )
+            second, _ = prepare_project_shape(
+                project_path,
+                12,
+                seed=31,
+                pipeline=pipeline,
+            )
+
+            self.assertFalse(first.metadata["preparation_cache_hit"])
+            self.assertTrue(second.metadata["preparation_cache_hit"])
+            self.assertEqual(mask_provider.calls, 1)
+            self.assertEqual(depth_provider.calls, 1)
+
+    def test_flow_direction_round_trip_and_project_lookup(self) -> None:
+        serialized = serialize_flow_directions(
+            {3: (3.0, 4.0), "5": {"x": 0, "y": -2}, 9: (0, 0)},
+            {3, 5, 9},
+        )
+        project = {"flow_directions": serialized, "shapes": []}
+
+        self.assertEqual(serialized["3"], {"x": 0.6, "y": 0.8})
+        self.assertNotIn("9", serialized)
+        self.assertEqual(project_flow_direction(project, 5), (0.0, -1.0))
+        self.assertIsNone(normalize_direction({"x": "bad", "y": 1}))
+
+    def test_flow_guides_round_trip_and_steer_local_regions(self) -> None:
+        serialized = serialize_flow_guides(
+            {
+                4: [
+                    {"start": [12, 12], "end": [12, 28]},
+                    {"start": {"x": 36, "y": 28}, "end": {"x": 36, "y": 12}},
+                    {"start": [1, 1], "end": [1, 1]},
+                ]
+            },
+            {4},
+        )
+        project = {"flow_guides": serialized}
+
+        self.assertEqual(len(serialized["4"]), 2)
+        self.assertEqual(project_flow_guides(project, 4), serialized["4"])
+
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=10,
+            direction=(1.0, 0.0),
+            guides=serialized["4"],
+        )
+        speed = np.maximum(np.linalg.norm(assets.flow, axis=-1), 1e-6)
+        direction = assets.flow / speed[..., None]
+        self.assertGreater(float(direction[18, 12, 1]), 0.2)
+        self.assertLess(float(direction[18, 36, 1]), -0.2)
+        self.assertEqual(assets.metadata["flow_guides"], serialized["4"])
+
+    def test_cubic_flow_curve_changes_direction_along_its_path(self) -> None:
+        full_mask = np.ones(self.mask.shape, dtype=np.float32)
+        assets = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=4,
+            direction=(1.0, 0.0),
+            guides=[
+                {
+                    "start": [6, 6],
+                    "control1": [6, 29],
+                    "control2": [40, 29],
+                    "end": [40, 6],
+                }
+            ],
+        )
+
+        self.assertGreater(float(assets.flow[10, 7, 1]), 0.2)
+        self.assertLess(float(assets.flow[10, 39, 1]), -0.2)
+
+    def test_manual_map_zones_are_separate_from_ai_proposals(self) -> None:
+        full_mask = np.ones(self.mask.shape, dtype=np.float32)
+        overrides = {
+            "speed_zones": [
+                {"center": [12, 18], "radius": 8, "value": 0.2},
+                {"center": [36, 18], "radius": 8, "value": 1.5},
+            ],
+            "obstacle_zones": [
+                {"center": [24, 18], "radius": 7, "value": 1.0}
+            ],
+            "foam_zones": [
+                {"center": [36, 18], "radius": 7, "value": 1.0}
+            ],
+            "depth_zones": [
+                {"center": [6, 18], "radius": 5, "value": 0.9}
+            ],
+        }
+        baseline = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=5,
+            direction=(1.0, 0.0),
+        )
+        assets = self.pipeline.prepare(
+            self.image,
+            full_mask,
+            effect_type="water",
+            seed=5,
+            direction=(1.0, 0.0),
+            manual_overrides=overrides,
+        )
+
+        self.assertLess(float(assets.speed[18, 12]), 0.3)
+        self.assertGreater(
+            float(assets.speed[18, 36]),
+            float(baseline.speed[18, 36]) * 1.2,
+        )
+        self.assertGreater(float(assets.obstacles[18, 24]), 0.95)
+        self.assertLess(float(assets.speed[18, 24]), 0.05)
+        self.assertGreater(float(assets.foam[18, 36]), 0.95)
+        self.assertGreater(float(assets.depth[18, 6]), 0.85)
+        self.assertEqual(
+            assets.metadata["asset_layers"]["manual_overrides"]["foam_zones"],
+            1,
+        )
+
+    def test_manual_mask_zones_override_the_ai_mask_proposal(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=6,
+            direction=(1.0, 0.0),
+            manual_overrides={
+                "mask_add_zones": [
+                    {"center": [2, 2], "radius": 4, "value": 1.0}
+                ],
+                "mask_remove_zones": [
+                    {"center": [20, 16], "radius": 4, "value": 1.0}
+                ],
+            },
+        )
+
+        self.assertGreater(float(assets.mask[2, 2]), 0.95)
+        self.assertLess(float(assets.mask[16, 20]), 0.05)
+
+    def test_effect_override_zones_round_trip(self) -> None:
+        serialized = serialize_effect_overrides(
+            {
+                9: {
+                    "speed_zones": [
+                        {"center": [5, 6], "radius": 12, "value": 1.5}
+                    ],
+                    "obstacle_zones": [
+                        {"center": [8, 9], "radius": 4, "value": 1}
+                    ],
+                }
+            },
+            {9},
+        )
+
+        restored = project_effect_overrides(
+            {"effect_overrides": serialized}, 9
+        )
+        self.assertEqual(restored, serialized["9"])
+
+    def test_water_card_settings_are_mapped_to_renderer_params(self) -> None:
+        card = {
+            "tool_type": "water",
+            "main": {
+                "key": "main_waterfall",
+                "params": {
+                    "intensity": "high",
+                    "power": "normal",
+                    "opacity": "low",
+                    "randomness": "high",
+                },
+            },
+        }
+
+        params = renderer_params_from_card(card)
+
+        self.assertAlmostEqual(params["strength"], 8.7)
+        self.assertAlmostEqual(params["opacity"], 0.45)
+        self.assertLess(params["secondary_wavelength"], 24.0)
+
+    def test_still_water_visual_controls_change_renderer_params(self) -> None:
+        subtle = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "main": {
+                    "params": {
+                        "transparency": "weak",
+                        "reflections": "low",
+                        "grain": "low",
+                    }
+                },
+            }
+        )
+        pronounced = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "main": {
+                    "params": {
+                        "transparency": "high",
+                        "reflections": "high",
+                        "grain": "high",
+                    }
+                },
+            }
+        )
+
+        self.assertLess(pronounced["opacity"], subtle["opacity"])
+        self.assertGreater(pronounced["highlight"], subtle["highlight"])
+        self.assertGreater(pronounced["turbulence"], subtle["turbulence"])
+        self.assertGreater(pronounced["shimmer"], subtle["shimmer"])
+
+    def test_integrated_water_phase_avoids_direction_flip_jump(self) -> None:
+        flow_x = np.ones((5, 101), dtype=np.float32)
+        flow_x[:, 51:] = -1.0
+        flow_y = np.zeros_like(flow_x)
+
+        along, across = _integrated_flow_coordinates(flow_x, flow_y)
+        old_coordinate = np.arange(101, dtype=np.float32) * flow_x[2]
+
+        self.assertGreater(float(np.abs(np.diff(old_coordinate)).max()), 90.0)
+        self.assertLessEqual(float(np.abs(np.diff(along[2])).max()), 1.01)
+        self.assertTrue(np.isfinite(across).all())
+
+    def test_numeric_motion_settings_override_strength_and_keep_whole_cycles(self) -> None:
+        card = {
+            "tool_type": "water",
+            "main": {"key": "main_river", "params": {"intensity": "strong"}},
+            "motion": {"strength": 9, "cycles": 3},
+        }
+
+        params = renderer_params_from_card(card)
+
+        self.assertEqual(params["strength"], 9.0)
+        self.assertEqual(params["cycles"], 3.0)
+
+    def test_motion_profile_caps_values_that_create_rubbery_water(self) -> None:
+        params = renderer_params_from_card(
+            {
+                "tool_type": "water",
+                "preset_id": "still_water",
+                "motion": {"strength": 20, "cycles": 8},
+            }
+        )
+
+        self.assertEqual(params["strength"], 4.0)
+        self.assertEqual(params["cycles"], 2.0)
+
+    def test_builtin_presets_support_ids_aliases_and_defaults(self) -> None:
+        registry = default_preset_registry()
+
+        self.assertEqual(registry.resolve("water").preset_id, "river")
+        self.assertEqual(registry.resolve("water", "main_waterfall").preset_id, "waterfall")
+        self.assertEqual(registry.resolve("water", "main_Still_water").preset_id, "still_water")
+        self.assertEqual(
+            [preset.preset_id for preset in registry.list("water")],
+            ["fast_river", "river", "still_water", "waterfall"],
+        )
+
+        explicit_card = {
+            "tool_type": "water",
+            "preset_id": "still_water",
+            "main": {"key": "main_waterfall", "params": {}},
+        }
+        self.assertEqual(renderer_params_from_card(explicit_card)["strength"], 2.0)
+
+    def test_preset_registry_rejects_invalid_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "broken",
+                        "effect_type": "water",
+                        "label": "Broken",
+                        "params": {"strength": "very"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "not numeric"):
+                PresetRegistry.from_directory(directory)
+
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "no_default",
+                        "effect_type": "water",
+                        "label": "No default",
+                        "params": {"strength": 2.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "Missing default preset"):
+                PresetRegistry.from_directory(directory)
+
+    def test_cli_render_uses_asset_preset_and_explicit_overrides(self) -> None:
+        assets = self.prepare()
+        assets.metadata["preset_id"] = "waterfall"
+        assets.metadata["renderer_params"] = {"strength": 8.0, "opacity": 0.6}
+
+        self.assertEqual(resolve_render_params(assets)["strength"], 8.0)
+        river = resolve_render_params(assets, preset_id="river")
+        self.assertEqual(river["strength"], 4.5)
+        overridden = resolve_render_params(assets, preset_id="river", opacity=0.25)
+        self.assertEqual(overridden["opacity"], 0.25)
+
+    def test_future_project_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shapes.json"
+            path.write_text(json.dumps({"schema_version": 999}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Unsupported project schema_version"):
+                load_project(path)
+
+    def test_project_preview_keeps_full_assets_and_downscales_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 3,
+                        "type": "Rectangle",
+                        "x": 5,
+                        "y": 4,
+                        "width": 35,
+                        "height": 25,
+                    }
+                ],
+                "shape_cards": [
+                    {
+                        "id": 3,
+                        "tool_type": "water",
+                        "main": {
+                            "key": "main_river",
+                            "name": "river",
+                            "params": {"intensity": "normal", "opacity": "high"},
+                        },
+                        "sub": [],
+                    }
+                ],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            result = build_project_preview(
+                project_path,
+                3,
+                direction_override=(0.0, -3.0),
+                frame_count=6,
+                fps=10,
+                max_dimension=24,
+                seed=17,
+            )
+            stored = EffectAssetStore.load(result.assets_dir)
+
+            self.assertEqual(len(result.frames), 6)
+            self.assertEqual(result.frames[0].size, (24, 18))
+            self.assertEqual(stored.size, self.image.size)
+            self.assertEqual(stored.seed, 17)
+            self.assertEqual(result.params["opacity"], 1.0)
+            self.assertEqual(result.preset_id, "river")
+            self.assertEqual(stored.metadata["preset_id"], "river")
+            flow_speed = np.linalg.norm(stored.flow, axis=-1)
+            normalized_flow = stored.flow / np.maximum(flow_speed[..., None], 1e-6)
+            self.assertGreater(float(flow_speed[stored.mask > 0.5].mean()), 0.5)
+            self.assertEqual(float(flow_speed[stored.mask <= 0.01].max()), 0.0)
+            self.assertAlmostEqual(
+                float(normalized_flow[stored.mask > 0.5, 0].mean()), 0.0, delta=0.08
+            )
+            self.assertLess(
+                float(normalized_flow[stored.mask > 0.5, 1].mean()), -0.95
+            )
+            self.assertEqual(stored.metadata["direction"], [0.0, -1.0])
+
+    def test_effect_context_and_water_layers_are_stable(self) -> None:
+        assets = self.prepare(seed=81)
+        context = EffectContext(
+            time=1.25,
+            seed=assets.seed,
+            assets=assets,
+            params={"strength": 3.0},
+        )
+
+        self.assertAlmostEqual(context.time, 0.25)
+        np.testing.assert_array_equal(
+            context.rng("layer").integers(0, 1000, 8),
+            context.rng("layer").integers(0, 1000, 8),
+        )
+        self.assertEqual(
+            WaterFlowEffect().layer_names,
+            ("waves", "deformation", "highlights", "foam"),
+        )
+
+    def test_rain_renderer_is_deterministic_periodic_and_masked(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=27,
+            direction=(0.2, 1.0),
+        )
+        engine = DeterministicEffectEngine()
+        params = {"density": 0.8, "drop_length": 12, "mist": 0.12}
+        frame_zero = np.asarray(engine.render_frame(self.image, assets, 0.0, params))
+        frame_repeat = np.asarray(engine.render_frame(self.image, assets, 1.0, params))
+        frame_middle = np.asarray(engine.render_frame(self.image, assets, 0.35, params))
+
+        np.testing.assert_array_equal(frame_zero, frame_repeat)
+        self.assertFalse(np.array_equal(frame_zero, frame_middle))
+        source = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            frame_middle[assets.mask <= 0.001],
+            source[assets.mask <= 0.001],
+        )
+        self.assertEqual(RainEffect().layer_names, ("streaks", "mist"))
+
+    def test_rain_motion_is_visually_continuous_at_loop_seam(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=33,
+            direction=(1.0, 0.35),
+        )
+        engine = DeterministicEffectEngine()
+        params = {"density": 1.0, "cycles": 2, "mist": 0.0}
+        frame_zero = np.asarray(
+            engine.render_frame(self.image, assets, 0.0, params), dtype=np.float32
+        )
+        frame_near_seam = np.asarray(
+            engine.render_frame(self.image, assets, 0.999, params), dtype=np.float32
+        )
+        frame_middle = np.asarray(
+            engine.render_frame(self.image, assets, 0.5 / 2.0, params),
+            dtype=np.float32,
+        )
+        seam_error = float(np.mean((frame_zero - frame_near_seam) ** 2))
+        middle_error = float(np.mean((frame_zero - frame_middle) ** 2))
+
+        self.assertLess(seam_error, middle_error)
+
+    def test_compositor_applies_multiple_effects_in_order(self) -> None:
+        water = self.prepare(seed=13)
+        rain = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="rain",
+            seed=14,
+            direction=(0.15, 1.0),
+        )
+        engine = DeterministicEffectEngine()
+        water_only = np.asarray(engine.render_frame(self.image, water, 0.3))
+        composed = np.asarray(
+            engine.render_composite_frame(
+                self.image,
+                (
+                    EffectApplication(water, {"strength": 3.0}),
+                    EffectApplication(rain, {"density": 0.9, "mist": 0.1}),
+                ),
+                0.3,
+            )
+        )
+
+        self.assertFalse(np.array_equal(water_only, composed))
+        source = np.asarray(self.image)
+        np.testing.assert_array_equal(
+            composed[np.maximum(water.mask, rain.mask) <= 0.001],
+            source[np.maximum(water.mask, rain.mask) <= 0.001],
+        )
+
+    def test_compositor_quantizes_only_after_all_effects(self) -> None:
+        class FractionalLayer:
+            name = "fractional"
+
+            def apply(self, frame, context) -> None:
+                # 0.4 of one display-code step. One pass rounds to zero, while
+                # two float passes correctly accumulate to one output value.
+                delta = 0.4 / (255.0 * 12.92)
+                frame.current += context.mask[..., None] * delta
+
+        class FractionalEffect(LayeredEffect):
+            effect_type = "fractional"
+
+            def __init__(self) -> None:
+                super().__init__((FractionalLayer(),))
+
+        zeros = np.zeros((1, 1), dtype=np.float32)
+        assets = EffectAssets(
+            effect_type="fractional",
+            seed=1,
+            mask=np.ones_like(zeros),
+            depth=zeros,
+            flow=np.zeros((1, 1, 2), dtype=np.float32),
+        )
+        compositor = EffectCompositor({"fractional": FractionalEffect()})
+        output = np.asarray(
+            compositor.compose(
+                np.zeros((1, 1, 3), dtype=np.uint8),
+                (EffectApplication(assets), EffectApplication(assets)),
+                0.0,
+            )
+        )
+
+        np.testing.assert_array_equal(output, np.ones((1, 1, 3), dtype=np.uint8))
+
+    def test_linear_color_round_trip_and_midpoint(self) -> None:
+        samples = np.array([0, 1, 32, 128, 240, 255], dtype=np.uint8)
+        restored = linear_to_srgb_u8(srgb_u8_to_linear(samples))
+
+        np.testing.assert_array_equal(restored, samples)
+        # Half of the physical light between black and white is about sRGB 188,
+        # not the too-dark sRGB arithmetic midpoint 128.
+        midpoint = int(linear_to_srgb_u8(np.array([0.5], dtype=np.float32))[0])
+        self.assertEqual(midpoint, 188)
+
+    def test_byte_budget_lru_is_bounded_and_thread_safe(self) -> None:
+        cache = ByteBudgetLRU[str, np.ndarray](max_bytes=12)
+        factory_calls = []
+        calls_lock = threading.Lock()
+
+        def create() -> np.ndarray:
+            with calls_lock:
+                factory_calls.append(1)
+            time.sleep(0.01)
+            return np.arange(3, dtype=np.float32)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            values = list(
+                executor.map(
+                    lambda _: cache.get_or_create("a", create),
+                    range(4),
+                )
+            )
+
+        self.assertEqual(len(factory_calls), 1)
+        self.assertTrue(all(value is values[0] for value in values))
+        cache.get_or_create("b", lambda: np.ones(3, dtype=np.float32))
+        info = cache.info()
+        self.assertEqual(info.entries, 1)
+        self.assertLessEqual(info.current_bytes, info.max_bytes)
+        self.assertEqual(info.evictions, 1)
+
+    def test_render_sessions_are_isolated_and_deterministic(self) -> None:
+        assets = self.prepare(seed=91)
+        engine = DeterministicEffectEngine()
+        session_a = engine.create_session()
+        session_b = engine.create_session()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outputs = list(
+                executor.map(
+                    lambda session: np.asarray(
+                        session.render_frame(self.image, assets, 0.37)
+                    ),
+                    (session_a, session_b),
+                )
+            )
+
+        np.testing.assert_array_equal(outputs[0], outputs[1])
+
+    def test_foam_advects_with_flow_and_keeps_a_closed_loop(self) -> None:
+        width, height = 80, 24
+        mask = np.ones((height, width), dtype=np.float32)
+        foam = np.zeros_like(mask)
+        foam[8:16, 18:24] = 1.0
+        flow = np.zeros((height, width, 2), dtype=np.float32)
+        flow[..., 0] = 1.0
+        assets = EffectAssets(
+            effect_type="water",
+            seed=12,
+            mask=mask,
+            depth=np.full_like(mask, 0.5),
+            flow=flow,
+            foam=foam,
+        )
+        image = Image.new("RGB", (width, height), "black")
+        params = {
+            "opacity": 0.0,
+            "highlight": 0.0,
+            "foam_amount": 1.0,
+            "secondary_wavelength": 28.0,
+            "cycles": 1,
+        }
+        engine = DeterministicEffectEngine()
+        at_zero = np.asarray(engine.render_frame(image, assets, 0.0, params))
+        moved = np.asarray(engine.render_frame(image, assets, 0.02, params))
+        at_one = np.asarray(engine.render_frame(image, assets, 1.0, params))
+
+        def horizontal_centroid(frame: np.ndarray) -> float:
+            weights = frame.astype(np.float32).mean(axis=2).sum(axis=0)
+            return float(weights @ np.arange(width) / max(float(weights.sum()), 1e-6))
+
+        np.testing.assert_array_equal(at_zero, at_one)
+        self.assertFalse(np.array_equal(at_zero, moved))
+        self.assertGreater(horizontal_centroid(moved), horizontal_centroid(at_zero))
+
+    def test_ai_provider_failures_fall_back_once_and_are_reported(self) -> None:
+        class BrokenMaskRefiner:
+            name = "broken-mask"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def refine(self, image, rough_mask):
+                self.calls += 1
+                raise RuntimeError("mask unavailable")
+
+        class BrokenDepthEstimator:
+            name = "broken-depth"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def estimate(self, image, mask):
+                self.calls += 1
+                raise RuntimeError("depth unavailable")
+
+        broken_mask = BrokenMaskRefiner()
+        broken_depth = BrokenDepthEstimator()
+        pipeline = PreparationPipeline(
+            mask_refiner=ResilientMaskRefiner(primary=broken_mask),
+            depth_estimator=ResilientDepthEstimator(primary=broken_depth),
+        )
+
+        first = pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=8,
+        )
+        pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=9,
+        )
+
+        self.assertEqual(broken_mask.calls, 1)
+        self.assertEqual(broken_depth.calls, 1)
+        self.assertEqual(
+            set(first.metadata["provider_warnings"]),
+            {"mask", "depth"},
+        )
+        states = pipeline.retry_failed_providers()
+        self.assertEqual(states["mask"]["mode"], "fallback")
+        pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="water",
+            seed=10,
+        )
+        self.assertEqual(broken_mask.calls, 2)
+        self.assertEqual(broken_depth.calls, 2)
+
+    def test_plugin_manifest_registers_renderer_and_panel_together(self) -> None:
+        registry = default_effect_plugin_registry()
+        plugins = {plugin.effect_type: plugin for plugin in registry.list()}
+
+        self.assertEqual(set(plugins), {"water", "rain", "fire"})
+        self.assertEqual(
+            [plugin.effect_type for plugin in registry.for_panel("weather")],
+            ["rain"],
+        )
+        self.assertEqual(plugins["water"].panel_container, "splitter_347")
+        self.assertIsInstance(plugins["water"].create_renderer(), WaterFlowEffect)
+        self.assertEqual(plugins["fire"].panel_container, "splitter_2")
+        self.assertIsInstance(plugins["fire"].create_renderer(), FireEffect)
+
+    def test_fire_is_deterministic_periodic_masked_and_quality_checked(self) -> None:
+        assets = self.pipeline.prepare(
+            self.image,
+            self.mask,
+            effect_type="fire",
+            seed=61,
+            direction=(0.0, -1.0),
+        )
+        engine = DeterministicEffectEngine()
+        start = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        repeated = np.asarray(engine.render_frame(self.image, assets, 0.0))
+        end = np.asarray(engine.render_frame(self.image, assets, 1.0))
+        middle = np.asarray(engine.render_frame(self.image, assets, 0.37))
+        source = np.asarray(self.image)
+
+        np.testing.assert_array_equal(start, repeated)
+        np.testing.assert_array_equal(start, end)
+        self.assertFalse(np.array_equal(start, middle))
+        np.testing.assert_array_equal(
+            middle[assets.mask <= 1e-4],
+            source[assets.mask <= 1e-4],
+        )
+        report = analyze_effect_quality(
+            self.image,
+            assets,
+            frame_count=8,
+            engine=engine,
+        )
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual(report.determinism_max_error, 0)
+        self.assertEqual(report.outside_mask_max_error, 0)
+
+    def test_parameter_schemas_and_rain_preview(self) -> None:
+        schemas = default_parameter_schema_registry()
+        rain_schema = schemas.get("rain")
+        self.assertEqual(rain_schema.get("density").kind, "float")
+        self.assertEqual(rain_schema.get("drop_length").suffix, " px")
+        rain_preset = default_preset_registry().resolve("rain", "main_Rain")
+        self.assertEqual(rain_preset.preset_id, "rain")
+        fire_schema = schemas.get("fire")
+        self.assertEqual(fire_schema.get("heat_distortion").suffix, " px")
+        self.assertEqual(
+            default_preset_registry().resolve("fire", "main_Campfire").preset_id,
+            "campfire",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.image.save(root / "background.png")
+            project = {
+                "background": "background.png",
+                "shapes": [
+                    {
+                        "id": 4,
+                        "type": "Rectangle",
+                        "x": 4,
+                        "y": 3,
+                        "width": 38,
+                        "height": 28,
+                    }
+                ],
+                "shape_cards": [
+                    {
+                        "id": 4,
+                        "tool_type": "rain",
+                        "preset_id": "rain",
+                        "main": {
+                            "key": "main_Rain",
+                            "name": "Rain",
+                            "params": {"density": 0.72, "mist": 0.14},
+                        },
+                        "sub": [],
+                    }
+                ],
+            }
+            project_path = root / "shapes.json"
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            result = build_project_preview(
+                project_path,
+                4,
+                direction_override=(0.2, 1.0),
+                frame_count=4,
+                max_dimension=32,
+                seed=29,
+            )
+
+            self.assertEqual(result.effect_type, "rain")
+            self.assertEqual(result.preset_id, "rain")
+            self.assertEqual(result.params["density"], 0.72)
+            self.assertEqual(len(result.frames), 4)
+
+    def test_mp4_export_streams_hq_frames_without_duplicate_endpoint(self) -> None:
+        class DummyWriter:
+            def __init__(self, path: Path) -> None:
+                path.touch()
+                self.frames = []
+                self.closed = False
+
+            def append_data(self, frame) -> None:
+                self.frames.append(frame.copy())
+
+            def close(self) -> None:
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "loop.mp4"
+            writer = None
+            writer_kwargs = {}
+
+            def fake_writer(path, **kwargs):
+                nonlocal writer, writer_kwargs
+                writer_kwargs = kwargs
+                writer = DummyWriter(Path(path))
+                return writer
+
+            with patch("effect_engine.renderer.imageio.get_writer", side_effect=fake_writer):
+                result = DeterministicEffectEngine().export_mp4(
+                    self.image,
+                    self.prepare(),
+                    output,
+                    frame_count=6,
+                    fps=24,
+                    crf=17,
+                )
+
+            self.assertEqual(result, output)
+            self.assertTrue(output.exists())
+            self.assertIsNotNone(writer)
+            self.assertEqual(len(writer.frames), 6)
+            self.assertFalse(np.array_equal(writer.frames[0], writer.frames[-1]))
+            self.assertTrue(writer.closed)
+            self.assertEqual(writer_kwargs["fps"], 24)
+            self.assertIn("17", writer_kwargs["ffmpeg_params"])
+
+
+if __name__ == "__main__":
+    unittest.main()

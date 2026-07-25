@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "effect_type": "rain",
+  "parameters": [
+    {"id": "density", "label": "Density", "type": "float", "default": 0.55, "minimum": 0.02, "maximum": 1.0, "step": 0.05, "tooltip": "Number of deterministic rain streaks"},
+    {"id": "drop_length", "label": "Drop length", "type": "float", "default": 18.0, "minimum": 3.0, "maximum": 80.0, "step": 1.0, "suffix": " px"},
+    {"id": "opacity", "label": "Opacity", "type": "float", "default": 0.52, "minimum": 0.0, "maximum": 1.0, "step": 0.05},
+    {"id": "wind", "label": "Wind", "type": "float", "default": 0.12, "minimum": -1.0, "maximum": 1.0, "step": 0.05},
+    {"id": "mist", "label": "Mist", "type": "float", "default": 0.08, "minimum": 0.0, "maximum": 0.6, "step": 0.02},
+    {"id": "brightness", "label": "Brightness", "type": "float", "default": 0.8, "minimum": 0.1, "maximum": 1.0, "step": 0.05}
+  ]
+}

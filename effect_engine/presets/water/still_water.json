@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "still_water",
+  "effect_type": "water",
+  "label": "Still water",
+  "editor_key": "main_Still_water",
+  "aliases": ["still water", "calm_lake"],
+  "controls": ["opacity", "transparency", "reflections", "grain", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
+  "params": {
+    "strength": 2.0,
+    "wavelength": 92.0,
+    "secondary_wavelength": 58.0,
+    "opacity": 0.75,
+    "advection": 0.2,
+    "cross_flow": 0.7,
+    "shimmer": 0.08,
+    "highlight": 0.2,
+    "foam_amount": 0.05,
+    "turbulence": 0.08,
+    "refraction": 0.32,
+    "surface_detail": 0.28
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "river",
+  "effect_type": "water",
+  "label": "River",
+  "editor_key": "main_river",
+  "aliases": ["river"],
+  "controls": ["intensity", "randomness", "opacity", "viscosity", "refraction", "surface_detail", "highlight", "foam_amount", "turbulence"],
+  "default": true,
+  "params": {
+    "strength": 4.5,
+    "wavelength": 64.0,
+    "secondary_wavelength": 34.0,
+    "opacity": 0.75,
+    "advection": 0.85,
+    "cross_flow": 0.5,
+    "shimmer": 0.04,
+    "highlight": 0.18,
+    "foam_amount": 0.28,
+    "turbulence": 0.3,
+    "refraction": 0.62,
+    "surface_detail": 0.48
+  }
+}

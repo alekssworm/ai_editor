@@ -3,7 +3,11 @@ from draw_tools import ResizableRectItem, SelectableCircleItem, SelectablePolygo
 
 
 def on_shape_selected(self):
-    selected_items = self.scene.selectedItems()
+    try:
+        selected_items = self.scene.selectedItems()
+    except RuntimeError:
+        # QGraphicsScene may emit selectionChanged while Qt is destroying it.
+        return
     if not selected_items:
         self.ui.comboBox_3.clear()
         return
